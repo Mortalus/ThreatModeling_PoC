@@ -1,5 +1,5 @@
 # --- Dependencies ---
-# pip install openai pydantic python-dotenv qdrant-client requests ollama
+# pip install openai pydantic python-dotenv qdrant-client requests ollama duckduckgo-search
 
 import os
 import json
@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
@@ -16,6 +17,7 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import ollama
+from duckduckgo_search import DDGS
 
 # Load environment variables
 load_dotenv()
@@ -39,6 +41,12 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "threat_models")
 QDRANT_USE_GRPC = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
 ENABLE_RAG = os.getenv("ENABLE_RAG", "true").lower() == "true"
+
+# Web Search Configuration
+ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3"))
+WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "wt-wt")  # worldwide
+# Note: timeout is not supported by duckduckgo-search library
 
 # File paths
 INPUT_DIR = os.getenv("INPUT_DIR", "./output")
@@ -76,6 +84,92 @@ class Threat(BaseModel):
 class ThreatsOutput(BaseModel):
     threats: List[Threat]
     metadata: Dict[str, Any]
+
+# --- Web Search Client ---
+class WebSearchClient:
+    def __init__(self):
+        self.ddgs = DDGS()
+        self.search_cache = {}
+        self.cache_lock = threading.Lock()
+        
+    def search(self, query: str, max_results: int = WEB_SEARCH_MAX_RESULTS) -> List[Dict[str, str]]:
+        """Search the web for security-related information."""
+        # Check cache first
+        with self.cache_lock:
+            if query in self.search_cache:
+                logger.debug(f"Using cached results for query: {query}")
+                return self.search_cache[query]
+        
+        try:
+            logger.info(f"Web searching for: {query}")
+            results = []
+            
+            # Perform search without timeout parameter (not supported)
+            search_results = self.ddgs.text(
+                query,
+                region=WEB_SEARCH_REGION,
+                max_results=max_results
+            )
+            
+            for result in search_results:
+                results.append({
+                    'title': result.get('title', ''),
+                    'body': result.get('body', ''),
+                    'url': result.get('href', ''),
+                    'source': 'web_search'
+                })
+            
+            # Cache results
+            with self.cache_lock:
+                self.search_cache[query] = results
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Web search error for query '{query}': {e}")
+            return []
+    
+    def search_security_context(self, component_info: str, stride_category: str) -> str:
+        """Search for security context specific to a component and STRIDE category."""
+        # Extract key information from component
+        component_type = "unknown"
+        component_name = "unknown"
+        
+        try:
+            if isinstance(component_info, str):
+                comp_dict = json.loads(component_info)
+                component_type = comp_dict.get('type', 'unknown')
+                component_name = comp_dict.get('name', 'unknown')
+        except:
+            pass
+        
+        # Create targeted security queries
+        queries = [
+            f"{component_type} {stride_category} vulnerability",
+            f"{stride_category} attack {component_type} security",
+            f"STRIDE {stride_category} threat modeling {component_type}"
+        ]
+        
+        all_results = []
+        for query in queries:
+            results = self.search(query, max_results=2)
+            all_results.extend(results)
+            
+            # Add small delay to avoid rate limiting
+            time.sleep(0.5)
+        
+        # Format results as context
+        if all_results:
+            context_parts = []
+            for i, result in enumerate(all_results[:5]):  # Limit to top 5 results
+                context_parts.append(f"[Source {i+1}: {result['title']}]")
+                context_parts.append(f"{result['body']}")
+                context_parts.append(f"URL: {result['url']}")
+                context_parts.append("---")
+            
+            return "\n".join(context_parts)
+        
+        return "No web search results found for this component and threat category."
 
 # --- LLM Client Factory ---
 class LLMClient:
@@ -274,9 +368,10 @@ def load_stride_definitions() -> Dict[str, tuple]:
 
 # --- Threat Analysis ---
 class ThreatAnalyzer:
-    def __init__(self, llm_client: LLMClient, rag_client: Optional[QdrantRAG] = None):
+    def __init__(self, llm_client: LLMClient, rag_client: Optional[QdrantRAG] = None, web_search_client: Optional[WebSearchClient] = None):
         self.llm = llm_client
         self.rag = rag_client
+        self.web_search = web_search_client
         self.stride_definitions = load_stride_definitions()
         self.threat_prompt_template = """
 You are a cybersecurity architect specializing in threat modeling using the STRIDE methodology.
@@ -288,17 +383,24 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
 **STRIDE Category to Focus On:**
 - **{stride_category} ({stride_name}):** {stride_definition}
 
-**Security Context from Knowledge Base:**
+**Security Context from Knowledge Base (RAG):**
 '''
 {rag_context}
+'''
+
+**Security Context from Web Search:**
+'''
+{web_context}
 '''
 
 **Instructions:**
 1. Generate 1-2 distinct and realistic threats for the component that fall **strictly** under the '{stride_name}' category.
 2. Be specific and relate the threat directly to the component's type and details.
-3. Use the provided Security Context to create specific descriptions, actionable mitigations, and accurate references.
-4. Provide a realistic risk assessment (Impact, Likelihood, Score).
-5. Output ONLY a valid JSON object with a single key "threats", containing a list of threat objects.
+3. Use BOTH the Knowledge Base context AND Web Search context to create specific descriptions, actionable mitigations, and accurate references.
+4. Prioritize recent security findings from web search when applicable.
+5. Provide a realistic risk assessment (Impact, Likelihood, Score).
+6. Include references from both sources when relevant.
+7. Output ONLY a valid JSON object with a single key "threats", containing a list of threat objects.
 
 **JSON Schema:**
 {{
@@ -335,25 +437,36 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
         
         logger.info(f"Analyzing component: {component_name}")
         
-        # Get RAG context if enabled
-        rag_context = "No specific security context available."
-        if hasattr(self, 'rag') and self.rag:
-            try:
-                rag_contexts = self.rag.search(component_str)
-                if rag_contexts:
-                    rag_context = "\n---\n".join(rag_contexts)
-                    logger.info(f"  Found {len(rag_contexts)} RAG contexts")
-            except Exception as e:
-                logger.warning(f"  RAG search failed: {e}")
-        
         all_threats = []
         
         for cat_letter, (cat_name, cat_def) in self.stride_definitions.items():
             logger.info(f"  Generating threats for STRIDE category: {cat_name}")
             
+            # Get RAG context if enabled
+            rag_context = "No RAG context available."
+            if self.rag:
+                try:
+                    rag_contexts = self.rag.search(component_str)
+                    if rag_contexts:
+                        rag_context = "\n---\n".join(rag_contexts)
+                        logger.info(f"    Found {len(rag_contexts)} RAG contexts")
+                except Exception as e:
+                    logger.warning(f"    RAG search failed: {e}")
+            
+            # Get web search context if enabled
+            web_context = "No web search context available."
+            if self.web_search:
+                try:
+                    web_context = self.web_search.search_security_context(component_str, cat_name)
+                    if web_context and web_context != "No web search results found for this component and threat category.":
+                        logger.info(f"    Found web search contexts")
+                except Exception as e:
+                    logger.warning(f"    Web search failed: {e}")
+            
             prompt = self.threat_prompt_template.format(
                 component_info=component_str,
                 rag_context=rag_context,
+                web_context=web_context,
                 stride_category=cat_letter,
                 stride_name=cat_name,
                 stride_definition=cat_def
@@ -377,6 +490,15 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
                             threat.get('impact', 'Low'),
                             threat.get('likelihood', 'Low')
                         )
+                        
+                        # Add source indicators to references
+                        enhanced_refs = []
+                        for ref in threat.get('references', []):
+                            if ref.startswith('http'):
+                                enhanced_refs.append(f"[Web] {ref}")
+                            else:
+                                enhanced_refs.append(f"[KB] {ref}")
+                        threat['references'] = enhanced_refs
                     
                     all_threats.extend(threats)
                     logger.info(f"    Generated {len(threats)} threat(s)")
@@ -508,7 +630,18 @@ def main():
         else:
             logger.info("RAG is disabled (ENABLE_RAG=false)")
         
-        analyzer = ThreatAnalyzer(llm_client, rag_client)
+        web_search_client = None
+        if ENABLE_WEB_SEARCH:
+            try:
+                web_search_client = WebSearchClient()
+                logger.info("Initialized Web Search client")
+            except Exception as web_error:
+                logger.warning(f"Failed to initialize Web Search client: {web_error}")
+                logger.info("Continuing without web search support")
+        else:
+            logger.info("Web search is disabled (ENABLE_WEB_SEARCH=false)")
+        
+        analyzer = ThreatAnalyzer(llm_client, rag_client, web_search_client)
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         return 1
@@ -590,6 +723,7 @@ def main():
             "llm_provider": LLM_PROVIDER.value,
             "llm_model": LLM_MODEL,
             "rag_enabled": ENABLE_RAG and rag_client is not None,
+            "web_search_enabled": ENABLE_WEB_SEARCH and web_search_client is not None,
             "qdrant_collection": QDRANT_COLLECTION if (ENABLE_RAG and rag_client) else None,
             "total_threats": len(all_threats),
             "components_analyzed": len(components),
@@ -625,6 +759,8 @@ def main():
     print(f"- Medium threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Medium')}")
     print(f"- Low threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Low')}")
     print(f"- Parallel workers used: {MAX_WORKERS}")
+    print(f"- RAG enabled: {ENABLE_RAG and rag_client is not None}")
+    print(f"- Web search enabled: {ENABLE_WEB_SEARCH and web_search_client is not None}")
     
     return 0
 
