@@ -1,457 +1,82 @@
 import os
 import json
-import asyncio
-from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union, AsyncIterator
-from datetime import datetime
-from dataclasses import dataclass, asdict, field
-import logging
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from functools import lru_cache, partial
-import aiofiles
-import aiofiles.os
-from contextlib import asynccontextmanager
-
-import instructor
 from langchain_core.prompts import ChatPromptTemplate
+from datetime import datetime
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
-from ollama import AsyncClient, Client
-from openai import AsyncOpenAI, OpenAI
+from pydantic import BaseModel, Field, ValidationError
+import logging
+import instructor
+from ollama import Client
 import PyPDF2
-import docx
-import base64
-import mimetypes
-import hashlib
-import pickle
-from collections import defaultdict
-import re
+import glob
+from openai import OpenAI
 
 # Load environment variables
 load_dotenv()
 
 # --- Configuration ---
-@dataclass
-class Config:
-    """Centralized configuration management with validation"""
-    llm_provider: str = "ollama"
-    llm_model: str = "llama3:8b"
-    vision_model: str = "llava:34b"
-    scw_api_url: str = "https://api.scaleway.ai/4a8fd76b-8606-46e6-afe6-617ce8eeb948/v1"
-    scw_secret_key: Optional[str] = None
-    input_dir: Path = Path("./input_documents")
-    output_dir: Path = Path("./output")
-    dfd_output_path: Path = Path("./output/dfd_components.json")
-    cache_dir: Path = Path("./cache")
-    max_workers: int = field(default_factory=lambda: min(32, (os.cpu_count() or 1) + 4))
-    chunk_size: int = 5000
-    batch_size: int = 10
-    enable_cache: bool = True
-    cache_ttl: int = 86400  # 24 hours
-    max_retries: int = 3
-    timeout: int = 300
-    
-    def __post_init__(self):
-        # Override with environment variables
-        self.llm_provider = os.getenv("LLM_PROVIDER", self.llm_provider).lower()
-        self.llm_model = os.getenv("LLM_MODEL", self.llm_model)
-        self.vision_model = os.getenv("VISION_MODEL", 
-                                     "llava:34b" if self.llm_provider == "ollama" else self.llm_model)
-        self.scw_api_url = os.getenv("SCW_API_URL", self.scw_api_url)
-        self.scw_secret_key = os.getenv("SCW_SECRET_KEY", self.scw_secret_key)
-        self.input_dir = Path(os.getenv("INPUT_DIR", str(self.input_dir)))
-        self.output_dir = Path(os.getenv("OUTPUT_DIR", str(self.output_dir)))
-        self.dfd_output_path = Path(os.getenv("DFD_OUTPUT_PATH", str(self.dfd_output_path)))
-        self.cache_dir = Path(os.getenv("CACHE_DIR", str(self.cache_dir)))
-        self.enable_cache = os.getenv("ENABLE_CACHE", "true").lower() == "true"
-        
-        # Create directories
-        for dir_path in [self.output_dir, self.cache_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-        
-        # Validate configuration
-        if self.llm_provider == "scaleway" and not self.scw_secret_key:
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "scaleway").lower()  # Default to 'ollama', can be set to 'scaleway'
+LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-instruct")
+SCW_API_URL = os.getenv("SCW_API_URL", "https://api.scaleway.ai/4a8fd76b-8606-46e6-afe6-617ce8eeb948/v1")
+SCW_SECRET_KEY = os.getenv("SCW_API_KEY")
+INPUT_DIR = os.getenv("INPUT_DIR", "./input_documents")
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./output")
+DFD_OUTPUT_PATH = os.getenv("DFD_OUTPUT_PATH", os.path.join(OUTPUT_DIR, "dfd_components.json"))
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Ensure output directory exists
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# --- Initialize LLM Client ---
+def initialize_llm_client():
+    if LLM_PROVIDER == "scaleway":
+        if not SCW_SECRET_KEY:
             raise ValueError("SCW_SECRET_KEY environment variable is required for Scaleway API.")
+        try:
+            client = instructor.from_openai(OpenAI(base_url=SCW_API_URL, api_key=SCW_SECRET_KEY))
+            logger.info("--- Scaleway OpenAI client initialized successfully ---")
+            return client, "scaleway"
+        except Exception as e:
+            logger.error(f"--- Failed to initialize Scaleway client: {e} ---")
+            raise
+    else:  # Default to Ollama
+        try:
+            raw_client = Client()  # Raw Ollama client for debugging
+            # Patch the Ollama client with instructor for structured output
+            instructor_client = instructor.patch(Client())
+            logger.info("--- Ollama client initialized successfully ---")
+            return raw_client, instructor_client, "ollama"
+        except Exception as e:
+            logger.error(f"--- Failed to initialize Ollama client: {e} ---")
+            raise
 
-# Initialize configuration
-config = Config()
-
-# --- Optimized Logging Setup ---
-class LoggerSetup:
-    _loggers = {}
-    
-    @classmethod
-    def get_logger(cls, name: str, level: int = logging.INFO) -> logging.Logger:
-        """Get a configured logger instance with caching"""
-        if name in cls._loggers:
-            return cls._loggers[name]
-        
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        
-        cls._loggers[name] = logger
-        return logger
-
-logger = LoggerSetup.get_logger(__name__)
-
-# --- Optimized DFD Schema with Pydantic v2 ---
+# --- DFD Schema for Validation ---
 class DataFlow(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    
-    source: str = Field(description="Source component of the data flow")
-    destination: str = Field(description="Destination component of the data flow")
-    data_description: str = Field(description="Description of data being transferred")
-    data_classification: str = Field(description="Classification: 'Confidential', 'PII', or 'Public'")
-    protocol: str = Field(description="Protocol used (e.g., 'HTTPS', 'JDBC/ODBC over TLS')")
-    authentication_mechanism: str = Field(description="Authentication method (e.g., 'JWT in Header')")
+    source: str = Field(description="Source component of the data flow (e.g., 'U' for User).")
+    destination: str = Field(description="Destination component of the data flow (e.g., 'CDN').")
+    data_description: str = Field(description="Description of data being transferred (e.g., 'User session tokens').")
+    data_classification: str = Field(description="Classification like 'Confidential', 'PII', or 'Public'.")
+    protocol: str = Field(description="Protocol used (e.g., 'HTTPS', 'JDBC/ODBC over TLS').")
+    authentication_mechanism: str = Field(description="Authentication method (e.g., 'JWT in Header').")
 
 class DFDComponents(BaseModel):
-    model_config = ConfigDict(frozen=True)
-    
-    project_name: str = Field(description="Name of the project")
-    project_version: str = Field(description="Version of the project")
-    industry_context: str = Field(description="Industry context")
-    external_entities: List[str] = Field(description="List of external entities")
-    assets: List[str] = Field(description="List of assets/data stores")
-    processes: List[str] = Field(description="List of processes")
-    trust_boundaries: List[str] = Field(description="List of trust boundaries")
-    data_flows: List[DataFlow] = Field(description="List of data flows between components")
+    project_name: str = Field(description="Name of the project (e.g., 'Web Application Security Model').")
+    project_version: str = Field(description="Version of the project (e.g., '1.1').")
+    industry_context: str = Field(description="Industry context (e.g., 'Finance').")
+    external_entities: list[str] = Field(description="List of external entities (e.g., ['U', 'Attacker']).")
+    assets: list[str] = Field(description="List of assets like data stores (e.g., ['DB_P', 'DB_B']).")
+    processes: list[str] = Field(description="List of processes (e.g., ['CDN', 'LB', 'WS']).")
+    trust_boundaries: list[str] = Field(description="List of trust boundaries (e.g., ['Public Zone to Edge Zone']).")
+    data_flows: list[DataFlow] = Field(description="List of data flows between components.")
 
 class DFDOutput(BaseModel):
     dfd: DFDComponents
     metadata: dict
 
-# --- Cache Manager ---
-class CacheManager:
-    """Efficient file-based caching with async support"""
-    
-    def __init__(self, cache_dir: Path, ttl: int = 86400):
-        self.cache_dir = cache_dir
-        self.ttl = ttl
-        self._cache_index = self._load_index()
-    
-    def _load_index(self) -> Dict[str, float]:
-        """Load cache index"""
-        index_path = self.cache_dir / ".cache_index.json"
-        if index_path.exists():
-            try:
-                with open(index_path, 'r') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-    
-    def _save_index(self):
-        """Save cache index"""
-        index_path = self.cache_dir / ".cache_index.json"
-        with open(index_path, 'w') as f:
-            json.dump(self._cache_index, f)
-    
-    def _get_cache_key(self, content: str) -> str:
-        """Generate cache key from content hash"""
-        return hashlib.sha256(content.encode()).hexdigest()
-    
-    async def get(self, key: str) -> Optional[str]:
-        """Get cached content"""
-        if not config.enable_cache:
-            return None
-        
-        cache_file = self.cache_dir / f"{key}.cache"
-        if cache_file.exists():
-            # Check TTL
-            if key in self._cache_index:
-                if datetime.now().timestamp() - self._cache_index[key] > self.ttl:
-                    # Expired
-                    await aiofiles.os.remove(cache_file)
-                    del self._cache_index[key]
-                    self._save_index()
-                    return None
-            
-            async with aiofiles.open(cache_file, 'r') as f:
-                return await f.read()
-        return None
-    
-    async def set(self, key: str, value: str):
-        """Set cached content"""
-        if not config.enable_cache:
-            return
-        
-        cache_file = self.cache_dir / f"{key}.cache"
-        async with aiofiles.open(cache_file, 'w') as f:
-            await f.write(value)
-        
-        self._cache_index[key] = datetime.now().timestamp()
-        self._save_index()
-
-# --- Async LLM Client Factory ---
-class AsyncLLMClientFactory:
-    """Factory for creating async LLM clients with connection pooling"""
-    
-    _clients = {}
-    _async_clients = {}
-    
-    @classmethod
-    async def get_async_client(cls, provider: str = None) -> Tuple[Union[AsyncClient, AsyncOpenAI], Union[AsyncClient, AsyncOpenAI], str]:
-        """Get or create async LLM client"""
-        provider = provider or config.llm_provider
-        
-        if provider in cls._async_clients:
-            return cls._async_clients[provider]
-        
-        if provider == "scaleway":
-            raw_client = AsyncOpenAI(
-                base_url=config.scw_api_url, 
-                api_key=config.scw_secret_key,
-                max_retries=config.max_retries,
-                timeout=config.timeout
-            )
-            instructor_client = instructor.from_openai(raw_client)
-            result = (raw_client, instructor_client, "scaleway")
-        else:  # ollama
-            raw_client = AsyncClient()
-            # Do not patch with instructor for Ollama; use raw client
-            result = (raw_client, raw_client, "ollama")
-        
-        cls._async_clients[provider] = result
-        logger.info(f"{provider.capitalize()} async client initialized")
-        return result
-    
-    @classmethod
-    def get_sync_client(cls, provider: str = None) -> Tuple[Union[Client, OpenAI], Union[Client, OpenAI], str]:
-        """Get sync client for backward compatibility"""
-        provider = provider or config.llm_provider
-        
-        if provider in cls._clients:
-            return cls._clients[provider]
-        
-        if provider == "scaleway":
-            raw_client = OpenAI(
-                base_url=config.scw_api_url,
-                api_key=config.scw_secret_key,
-                max_retries=config.max_retries,
-                timeout=config.timeout
-            )
-            instructor_client = instructor.from_openai(raw_client)
-            result = (raw_client, instructor_client, "scaleway")
-        else:  # ollama
-            raw_client = Client()
-            # Do not patch with instructor for Ollama; use raw client
-            result = (raw_client, raw_client, "ollama")
-        
-        cls._clients[provider] = result
-        return result
-
-# --- Optimized Document Loaders ---
-class AsyncDocumentLoader:
-    """Async document loading with better error handling and chunking"""
-    
-    SUPPORTED_EXTENSIONS = {
-        '.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg'
-    }
-    
-    TEXT_EXTENSIONS = {'.txt', '.md'}
-    IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg'}
-    
-    def __init__(self):
-        self.cache_manager = CacheManager(config.cache_dir)
-    
-    @staticmethod
-    @lru_cache(maxsize=256)
-    def get_mime_type(file_path: str) -> str:
-        """Get MIME type with caching"""
-        mime_type, _ = mimetypes.guess_type(file_path)
-        return mime_type or 'application/octet-stream'
-    
-    async def load_text_file_async(self, file_path: Path) -> str:
-        """Async load text-based files"""
-        async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            return await f.read()
-    
-    def load_pdf_file_optimized(self, file_path: Path) -> str:
-        """Optimized PDF loading with better memory management"""
-        try:
-            with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                total_pages = len(pdf_reader.pages)
-                
-                # Process in chunks for large PDFs
-                chunk_size = 50
-                all_text = []
-                
-                for start_idx in range(0, total_pages, chunk_size):
-                    end_idx = min(start_idx + chunk_size, total_pages)
-                    chunk_text = []
-                    
-                    for page_num in range(start_idx, end_idx):
-                        try:
-                            page = pdf_reader.pages[page_num]
-                            text = page.extract_text()
-                            if text:
-                                chunk_text.append(text)
-                        except Exception as e:
-                            logger.warning(f"Error extracting page {page_num} from {file_path}: {e}")
-                    
-                    if chunk_text:
-                        all_text.extend(chunk_text)
-                
-                return "\n".join(all_text)
-        except Exception as e:
-            logger.error(f"Failed to load PDF {file_path}: {e}")
-            return ""
-    
-    def load_docx_file_optimized(self, file_path: Path) -> str:
-        """Optimized DOCX loading"""
-        try:
-            doc = docx.Document(str(file_path))
-            # Use generator for memory efficiency
-            paragraphs = (para.text for para in doc.paragraphs if para.text.strip())
-            return "\n".join(paragraphs)
-        except Exception as e:
-            logger.error(f"Failed to load DOCX {file_path}: {e}")
-            return ""
-    
-    async def process_image_file_async(self, file_path: Path) -> str:
-        """Async process image files using vision model"""
-        # Check cache first
-        cache_key = self.cache_manager._get_cache_key(str(file_path))
-        cached = await self.cache_manager.get(cache_key)
-        if cached:
-            logger.info(f"Using cached vision analysis for {file_path}")
-            return cached
-        
-        vision_prompt = """You are an expert in analyzing diagrams, especially Data Flow Diagrams (DFD). 
-Describe this diagram in full detail. Identify all external entities, processes, data stores (assets), 
-trust boundaries, and every data flow with source, destination, data description, classification, 
-protocol, authentication mechanism if possible. Be as comprehensive as possible."""
-        
-        try:
-            raw_client, _, _ = await AsyncLLMClientFactory.get_async_client()
-            
-            if config.llm_provider == "ollama":
-                response = await raw_client.chat(
-                    model=config.vision_model,
-                    messages=[{"role": "user", "content": vision_prompt, "images": [str(file_path)]}]
-                )
-                content = response['message']['content']
-            else:  # scaleway
-                async with aiofiles.open(file_path, 'rb') as f:
-                    image_data = await f.read()
-                    base64_image = base64.b64encode(image_data).decode('utf-8')
-                
-                ext = file_path.suffix.lower()
-                image_type = "png" if ext == ".png" else "jpeg"
-                content_list = [
-                    {"type": "text", "text": vision_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/{image_type};base64,{base64_image}"}}
-                ]
-                
-                response = await raw_client.chat.completions.create(
-                    model=config.vision_model,
-                    messages=[{"role": "user", "content": content_list}]
-                )
-                content = response.choices[0].message.content
-            
-            # Cache the result
-            await self.cache_manager.set(cache_key, content)
-            return content
-            
-        except Exception as e:
-            logger.error(f"Failed to process image {file_path}: {e}")
-            return ""
-    
-    async def load_single_document_async(self, file_path: Path) -> Optional[str]:
-        """Async load a single document"""
-        ext = file_path.suffix.lower()
-        
-        try:
-            if ext in self.TEXT_EXTENSIONS:
-                content = await self.load_text_file_async(file_path)
-                logger.info(f"Loaded text file: {file_path}")
-                return content
-            elif ext == '.pdf':
-                # PDF loading is CPU-bound, use thread pool
-                loop = asyncio.get_event_loop()
-                content = await loop.run_in_executor(
-                    None, self.load_pdf_file_optimized, file_path
-                )
-                logger.info(f"Loaded PDF file: {file_path}")
-                return content
-            elif ext == '.docx':
-                # DOCX loading is CPU-bound, use thread pool
-                loop = asyncio.get_event_loop()
-                content = await loop.run_in_executor(
-                    None, self.load_docx_file_optimized, file_path
-                )
-                logger.info(f"Loaded DOCX file: {file_path}")
-                return content
-            elif ext in self.IMAGE_EXTENSIONS:
-                content = await self.process_image_file_async(file_path)
-                logger.info(f"Processed image file: {file_path}")
-                return content
-        except Exception as e:
-            logger.error(f"Error loading {file_path}: {e}")
-        
-        return None
-    
-    async def load_documents_async(self, input_dir: Path) -> List[str]:
-        """Load all documents asynchronously with batching"""
-        logger.info(f"Loading documents from '{input_dir}'")
-        
-        # Find all supported files
-        file_paths = [
-            f for f in input_dir.iterdir() 
-            if f.is_file() and f.suffix.lower() in self.SUPPORTED_EXTENSIONS
-        ]
-        
-        if not file_paths:
-            logger.warning("No valid documents found. Using sample document content.")
-            return [SAMPLE_DOCUMENT_CONTENT]
-        
-        # Group files by type for optimized processing
-        files_by_type = defaultdict(list)
-        for fp in file_paths:
-            ext = fp.suffix.lower()
-            if ext in self.TEXT_EXTENSIONS:
-                files_by_type['text'].append(fp)
-            elif ext in self.IMAGE_EXTENSIONS:
-                files_by_type['image'].append(fp)
-            else:
-                files_by_type['other'].append(fp)
-        
-        documents = []
-        
-        # Process text files in parallel (fast I/O)
-        if files_by_type['text']:
-            tasks = [self.load_single_document_async(fp) for fp in files_by_type['text']]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, str) and result:
-                    documents.append(result)
-        
-        # Process other files with controlled concurrency
-        for file_type in ['other', 'image']:
-            if files_by_type[file_type]:
-                # Process in batches to avoid overwhelming the system
-                for i in range(0, len(files_by_type[file_type]), config.batch_size):
-                    batch = files_by_type[file_type][i:i + config.batch_size]
-                    tasks = [self.load_single_document_async(fp) for fp in batch]
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for result in results:
-                        if isinstance(result, str) and result:
-                            documents.append(result)
-        
-        return documents
-
-# --- Sample Document Content ---
+# --- Sample Input for Testing (if no documents are found) ---
 SAMPLE_DOCUMENT_CONTENT = """
 System: Web Application Security Model, Version 1.1, Finance Industry
 External Entities: User (U), External Attacker
@@ -464,268 +89,158 @@ Data Flows:
 - From WS to DB_P: User profile data including names and email addresses, PII, JDBC/ODBC over TLS, Database Credentials from Secrets Manager
 """
 
-# --- Optimized Prompt Template ---
-EXTRACT_PROMPT_TEMPLATE = """
-You are a senior cybersecurity analyst specializing in threat modeling. Your task is to extract structured information from one or more input documents describing a system and transform it into a comprehensive and accurate JSON object representing a Data Flow Diagram (DFD).
+# --- Load and Parse Documents ---
+def load_documents(input_dir):
+    logger.info(f"--- Loading documents from '{input_dir}' ---")
+    documents = []
+    for file_path in glob.glob(os.path.join(input_dir, "*.[tT][xX][tT]")) + glob.glob(os.path.join(input_dir, "*.[pP][dD][fF]")):
+        try:
+            if file_path.lower().endswith(".txt"):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    documents.append(f.read())
+                logger.info(f"Loaded text file: {file_path}")
+            elif file_path.lower().endswith(".pdf"):
+                with open(file_path, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    text = "".join(page.extract_text() for page in pdf_reader.pages if page.extract_text())
+                    documents.append(text)
+                logger.info(f"Loaded PDF file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load {file_path}: {e}")
+    if not documents:
+        logger.warning("--- No valid documents found. Using sample document content ---")
+        documents = [SAMPLE_DOCUMENT_CONTENT]
+    return documents
 
-Your analysis must be meticulous. Follow these reasoning steps precisely:
+# --- Prompt Engineering for Document Extraction ---
+extract_prompt_template = """
+You are a senior cybersecurity analyst specializing in threat modeling. Your task is to extract structured information from multiple input documents describing a system architecture and transform it into a standardized JSON format for a Data Flow Diagram (DFD). The documents may include architecture diagrams, design specs, or text descriptions in varied formats.
 
-1. **Identify Core Components**: First, perform a full scan of the document(s) to identify and list all high-level components:
-   * `project_name`, `project_version`, and `industry_context`
-   * `external_entities`: Any user, actor, or system outside the primary application boundary
-   * `processes`: The distinct computational components or services that handle data
-   * `assets`: The data stores, such as databases, object storage buckets, or message queues
-   * `trust_boundaries`: The defined boundaries separating zones of different trust levels
+Using Chain-of-Thought reasoning:
+1. Identify and extract key elements: project metadata (name, version, industry), external entities, assets (e.g., databases), processes, trust boundaries, and data flows.
+2. Normalize component names (e.g., use 'DB_P' for 'Profile Database' if abbreviated elsewhere).
+3. For data flows, capture source, destination, data description, classification (e.g., 'Confidential', 'PII'), protocol, and authentication mechanism.
+4. Resolve conflicts across documents by prioritizing the most detailed description.
+5. If information is ambiguous, flag it in the metadata with an 'assumptions' key.
 
-2. **Systematically Extract ALL Data Flows**: This is the most critical step. You must identify every single flow of data mentioned or implied in the documents. Create a data flow entry for each interaction type:
-   * External-to-Process flows
-   * Process-to-External flows
-   * Process-to-Asset flows
-   * Process-to-Process flows
-
-3. **Detail and Classify Each Flow**: For every data flow, accurately populate all attributes:
-   * Apply strict data classification (Confidential for sensitive data, Public only for truly public data)
-   * Infer missing details from context when necessary
+Output a JSON object with:
+- 'project_name': Project name (default: 'Unknown Project' if not specified).
+- 'project_version': Version (default: '1.0').
+- 'industry_context': Industry (default: 'Unknown').
+- 'external_entities': List of external entities (e.g., ['U', 'Attacker']).
+- 'assets': List of assets like databases (e.g., ['DB_P', 'DB_B']).
+- 'processes': List of processes (e.g., ['CDN', 'LB', 'WS']).
+- 'trust_boundaries': List of trust boundaries (e.g., ['Public Zone to Edge Zone']).
+- 'data_flows': List of data flow objects with source, destination, data_description, data_classification, protocol, and authentication_mechanism.
 
 Input Documents:
 ---
 {documents}
 ---
 
-4. **Final Review**: Ensure every major action described in the use cases is represented by one or more data flows in your output.
-
 Output ONLY the JSON, with no additional commentary or formatting.
 """
 
-# --- Async DFD Extractor ---
-class AsyncDFDExtractor:
-    """Async DFD extraction with retry logic and better error handling"""
-    
-    def __init__(self):
-        self.prompt_template = ChatPromptTemplate.from_template(EXTRACT_PROMPT_TEMPLATE)
-        self.cache_manager = CacheManager(config.cache_dir / "llm_responses")
-    
-    async def extract_dfd(self, documents: List[str]) -> DFDOutput:
-        """Extract DFD components from documents asynchronously"""
-        # Combine documents efficiently
-        documents_combined = "\n--- Document Separator ---\n".join(documents)
-        
-        # Check cache
-        cache_key = self.cache_manager._get_cache_key(documents_combined)
-        cached_response = await self.cache_manager.get(cache_key)
-        
-        if cached_response:
-            logger.info("Using cached DFD extraction")
-            return DFDOutput(**json.loads(cached_response))
-        
-        # Generate prompt
-        messages = self.prompt_template.format_messages(documents=documents_combined)
-        prompt_content = messages[0].content
-        
-        logger.info("Sending prompt to LLM...")
-        
-        # Get clients
-        raw_client, instructor_client, client_type = await AsyncLLMClientFactory.get_async_client()
-        
-        # Extract with retry logic
-        for attempt in range(config.max_retries):
-            try:
-                if client_type == "scaleway":
-                    dfd_obj = await self._extract_scaleway_async(
-                        prompt_content, raw_client, instructor_client
-                    )
-                else:
-                    dfd_obj = await self._extract_ollama_async(
-                        prompt_content, raw_client
-                    )
-                
-                # Create output
-                output = self._create_output(dfd_obj)
-                
-                # Cache the result
-                await self.cache_manager.set(cache_key, json.dumps(output.model_dump()))
-                
-                return output
-                
-            except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed: {e}")
-                if attempt == config.max_retries - 1:
-                    raise
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff
-    
-    async def _extract_scaleway_async(self, prompt_content: str, raw_client, instructor_client) -> DFDComponents:
-        """Extract using Scaleway API asynchronously"""
-        # Get structured response
-        dfd_obj = await instructor_client.chat.completions.create(
-            model=config.llm_model,
-            messages=[{"role": "user", "content": prompt_content}],
+extract_prompt = ChatPromptTemplate.from_template(extract_prompt_template)
+
+# --- Invocation and Output ---
+logger.info("\n--- Starting Pre-Filter for Document Extraction ---")
+try:
+    # Initialize LLM client
+    if LLM_PROVIDER == "scaleway":
+        client, client_type = initialize_llm_client()
+    else:
+        raw_client, instructor_client, client_type = initialize_llm_client()
+
+    # Load documents
+    documents = load_documents(INPUT_DIR)
+    documents_combined = "\n--- Document Separator ---\n".join(documents)
+
+    # Generate messages from the prompt template
+    messages = extract_prompt.format_messages(documents=documents_combined)
+
+    # Log the prompt for debugging
+    logger.info(f"--- Prompt sent to LLM ---\n{messages[0].content}")
+
+    if client_type == "scaleway":
+        # Use instructor client for Scaleway
+        dfd_obj = client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": messages[0].content}],
             response_model=DFDComponents,
-            max_retries=2
+            max_retries=5
         )
-        
-        # Log usage asynchronously
-        asyncio.create_task(self._log_usage_async(raw_client, prompt_content, "scaleway"))
-        
-        return dfd_obj
-    
-    async def _extract_ollama_async(self, prompt_content: str, client) -> DFDComponents:
-        """Extract using Ollama asynchronously"""
-        # Strengthen prompt: Remove any prior output instruction and add a strict one at the end
-        # Format schema nicely for the prompt
-        schema_json = json.dumps(DFDComponents.model_json_schema(), indent=2)
-        prompt_with_json_instruction = (
-            prompt_content.rstrip()  # Trim any trailing output instructions
-            + "\n\n"
-            + "Return the response as a valid JSON object matching the following schema. "
-            + "Your output must be EXACTLY the JSON object ONLY. Do NOT add any explanations, text, code fences, or additional formatting before or after the JSON:\n"
-            + schema_json
+        # Log raw response for debugging
+        raw_client = OpenAI(base_url=SCW_API_URL, api_key=SCW_SECRET_KEY)
+        raw_response = raw_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": messages[0].content}],
+            response_format={"type": "json_object"}
         )
+        logger.info(f"--- Raw Scaleway Response ---\n{raw_response.choices[0].message.content}")
+        # Log token usage for Scaleway
+        if hasattr(raw_response, 'usage'):
+            prompt_tokens = raw_response.usage.prompt_tokens or 'N/A'
+            completion_tokens = raw_response.usage.completion_tokens or 'N/A'
+            total_tokens = raw_response.usage.total_tokens or 'N/A'
+            logger.info(f"--- Token Usage for Scaleway ---")
+            logger.info(f"Input Tokens: {prompt_tokens}")
+            logger.info(f"Output Tokens: {completion_tokens}")
+            logger.info(f"Total Tokens: {total_tokens}")
+
         
-        response = await client.chat(
-            model=config.llm_model,
-            messages=[{"role": "user", "content": prompt_with_json_instruction}],
-            options={"format": "json"}
+    else:
+        # Use instructor client for Ollama
+        dfd_obj = instructor_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": messages[0].content}],
+            response_model=DFDComponents,
+            max_retries=5
         )
-        
-        # Extract content
-        content = response['message']['content']
-        
-        # Log raw content for debugging
-        logger.debug(f"Raw Ollama response content: {content}")
-        
-        # Parse with robust extraction
-        try:
-            dfd_dict = self.extract_json(content)
-            dfd_obj = DFDComponents(**dfd_dict)
-        except (json.JSONDecodeError, ValueError, ValidationError) as e:
-            logger.error(f"Failed to parse Ollama response as DFDComponents: {e}")
-            logger.error(f"Invalid response content: {content}")
-            raise
-        
-        # Log usage asynchronously
-        asyncio.create_task(self._log_usage_async(client, prompt_content, "ollama"))
-        
-        return dfd_obj
+        # Log raw response for debugging
+        raw_response = raw_client.chat(model=LLM_MODEL, messages=[{"role": "user", "content": messages[0].content}])
+        logger.info(f"--- Raw Ollama Response ---\n{raw_response['message']['content']}")
+        # Log Token Count and Performance
+        prompt_tokens = raw_response.get('prompt_eval_count', 'N/A')
+        prompt_duration_ns = raw_response.get('prompt_eval_duration', 0)
+        response_tokens = raw_response.get('eval_count', 'N/A')
+        response_duration_ns = raw_response.get('eval_duration', 0)
+        prompt_duration_s = f"{prompt_duration_ns / 1_000_000_000:.2f}s" if prompt_duration_ns else "N/A"
+        response_duration_s = f"{response_duration_ns / 1_000_000_000:.2f}s" if response_duration_ns else "N/A"
+        logger.info(f"--- Token Usage & Performance ---")
+        logger.info(f"Input Tokens: {prompt_tokens} (processed in {prompt_duration_s})")
+        logger.info(f"Output Tokens: {response_tokens} (generated in {response_duration_s})")
+
+    dfd_dict = dfd_obj.model_dump()
     
-    def extract_json(self, text: str) -> dict:
-            """Helper to extract and parse JSON from potentially noisy text"""
-            if not text:
-                raise ValueError("Empty response content")
-            
-            text = text.strip()
-            
-            # Remove code fences if present
-            if text.startswith('```json'):
-                text = text[7:].strip()
-            elif text.startswith('```'):
-                text = text[3:].strip()
-            
-            if text.endswith('```'):
-                text = text[:-3].strip()
-            
-            # Find the JSON substring (largest {} block)
-            match = re.search(r'\{.*\}', text, re.DOTALL | re.MULTILINE)
-            if match:
-                json_str = match.group(0)
-                
-                # **FIX**: Remove trailing commas that cause JSONDecodeError
-                # This regex finds a comma followed by whitespace and then a } or ]
-                # and removes the comma.
-                json_str = re.sub(r',\s*([\}\]])', r'\1', json_str)
-                
-                try:
-                    return json.loads(json_str)
-                except json.JSONDecodeError as e:
-                    # Add more context to the error for easier debugging
-                    raise ValueError(f"Invalid JSON after cleaning: {e}\nContent: {json_str[:500]}...")
-            
-            raise ValueError("No valid JSON found in response")
-    
-    async def _log_usage_async(self, client, prompt_content: str, provider: str):
-        """Log token usage asynchronously"""
-        try:
-            if provider == "scaleway":
-                response = await client.chat.completions.create(
-                    model=config.llm_model,
-                    messages=[{"role": "user", "content": prompt_content}],
-                    response_format={"type": "json_object"},
-                    max_tokens=1  # Minimal to just get usage
-                )
-                if hasattr(response, 'usage'):
-                    logger.info(f"Token Usage - Input: {response.usage.prompt_tokens}, "
-                               f"Output: {response.usage.completion_tokens}, "
-                               f"Total: {response.usage.total_tokens}")
-            else:  # ollama
-                response = await client.chat(
-                    model=config.llm_model,
-                    messages=[{"role": "user", "content": prompt_content}],
-                    options={"num_predict": 1}  # Minimal response
-                )
-                prompt_tokens = response.get('prompt_eval_count', 'N/A')
-                response_tokens = response.get('eval_count', 'N/A')
-                logger.info(f"Token Usage - Input: {prompt_tokens}, Output: {response_tokens}")
-        except Exception as e:
-            logger.debug(f"Failed to log usage: {e}")
-    
-    def _create_output(self, dfd_obj: DFDComponents) -> DFDOutput:
-        """Create DFD output with metadata"""
-        # Find source documents efficiently
-        source_docs = []
-        try:
-            source_docs = [
-                str(f) for f in config.input_dir.iterdir()
-                if f.is_file() and f.suffix.lower() in AsyncDocumentLoader.SUPPORTED_EXTENSIONS
-            ]
-        except:
-            pass
-        
-        output_dict = {
-            "dfd": dfd_obj.model_dump(),
-            "metadata": {
-                "timestamp": datetime.now().isoformat(),
-                "source_documents": source_docs,
-                "assumptions": [],
-                "llm_provider": config.llm_provider,
-                "model": config.llm_model,
-                "version": "2.0"  # Script version
-            }
+    # Add metadata
+    output_dict = {
+        "dfd": dfd_dict,
+        "metadata": {
+            "timestamp": datetime.now().isoformat(),
+            "source_documents": glob.glob(os.path.join(INPUT_DIR, "*.[tT][xX][tT]")) + glob.glob(os.path.join(INPUT_DIR, "*.[pP][dD][fF]")),
+            "assumptions": [],
+            "llm_provider": LLM_PROVIDER
         }
-        
-        return DFDOutput(**output_dict)
-
-# --- Main Async Function ---
-async def async_main():
-    """Main async execution function"""
-    logger.info("Starting Optimized DFD Extraction Process")
+    }
     
+    # Validate the output against schema
     try:
-        # Load documents asynchronously
-        loader = AsyncDocumentLoader()
-        documents = await loader.load_documents_async(config.input_dir)
-        
-        # Extract DFD asynchronously
-        extractor = AsyncDFDExtractor()
-        output = await extractor.extract_dfd(documents)
-        
-        # Save output asynchronously
-        output_dict = output.model_dump()
-        async with aiofiles.open(config.dfd_output_path, 'w') as f:
-            await f.write(json.dumps(output_dict, indent=2))
-        
-        # Log results
-        logger.info("DFD Components:")
-        print(json.dumps(output_dict, indent=2))
-        logger.info(f"DFD components successfully saved to '{config.dfd_output_path}'")
-        
-    except Exception as e:
-        logger.error(f"An error occurred during document extraction: {e}")
+        validated = DFDOutput(**output_dict)
+        logger.info("--- JSON output validated successfully ---")
+    except ValidationError as ve:
+        logger.error(f"--- JSON validation failed: {ve} ---")
         raise
+    
+    # Save the DFD components to a file
+    with open(DFD_OUTPUT_PATH, 'w') as f:
+        json.dump(output_dict, f, indent=2)
+        
+    logger.info("\n--- LLM Output (DFD Components) ---")
+    print(json.dumps(output_dict, indent=2))
+    logger.info(f"\n--- DFD components successfully saved to '{DFD_OUTPUT_PATH}' ---")
 
-# --- Entry Point ---
-def main():
-    """Entry point with async support"""
-    # Run async main
-    asyncio.run(async_main())
-
-if __name__ == "__main__":
-    main()
+except Exception as e:
+    logger.error(f"\n--- An error occurred during document extraction ---")
+    logger.error(f"Error: {e}")
+    logger.error("This could be due to the LLM not returning a well-formed JSON object or an issue with the input documents.")
