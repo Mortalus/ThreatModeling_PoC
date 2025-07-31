@@ -78,6 +78,15 @@ class Config:
     max_paths_to_analyze: int = field(default_factory=lambda: int(os.getenv("MAX_PATHS_TO_ANALYZE", "20")))
     enable_llm_enrichment: bool = field(default_factory=lambda: os.getenv("ENABLE_LLM_ENRICHMENT", "true").lower() == "true")
     
+    # Vector store configuration
+    enable_vector_store: bool = field(default_factory=lambda: os.getenv("ENABLE_VECTOR_STORE", "true").lower() == "true")
+    qdrant_url: str = field(default_factory=lambda: os.getenv("QDRANT_URL", "http://homebase:6333"))
+    qdrant_api_key: Optional[str] = field(default_factory=lambda: os.getenv("QDRANT_API_KEY"))
+    project_name: str = field(default_factory=lambda: os.getenv("PROJECT_NAME", "Unknown Project"))
+    project_industry: str = field(default_factory=lambda: os.getenv("PROJECT_INDUSTRY", "General"))
+    project_tech_stack: str = field(default_factory=lambda: os.getenv("PROJECT_TECH_STACK", ""))
+    project_compliance: str = field(default_factory=lambda: os.getenv("PROJECT_COMPLIANCE", ""))
+    
     def __post_init__(self):
         """Initialize derived paths if not set."""
         if not self.refined_threats_path:
@@ -158,6 +167,7 @@ class AttackPathAnalysis(BaseModel):
     critical_scenarios: List[str]
     defense_priorities: List[Dict[str, Any]]
     threat_coverage: Dict[str, Any] = Field(default_factory=dict, description="How many threats are covered")
+    vector_store_insights: Optional[Dict[str, Any]] = Field(default=None, description="Insights from vector store")
     metadata: Dict[str, Any]
 
 # Enhanced LLM Client with retry logic
@@ -1014,6 +1024,7 @@ class AttackPathAnalyzer:
                     critical_scenarios=[],
                     defense_priorities=[],
                     threat_coverage={},
+                    vector_store_insights=None,
                     metadata={
                         "timestamp": datetime.now().isoformat(),
                         "error": "No valid attack paths found"
@@ -1057,11 +1068,25 @@ class AttackPathAnalyzer:
             # Calculate threat coverage
             threat_coverage = self.calculate_threat_coverage(attack_paths, threats)
             
+            # Process with vector store if enabled
+            vector_store_insights = None
+            if self.config.enable_vector_store:
+                try:
+                    vector_store_insights = self._process_vector_store(
+                        attack_paths[:self.config.max_paths_to_analyze],
+                        dfd_data,
+                        defense_priorities
+                    )
+                except Exception as e:
+                    self.logger.error(f"Vector store processing failed: {e}")
+                    # Continue without vector store insights
+            
             return AttackPathAnalysis(
                 attack_paths=attack_paths[:self.config.max_paths_to_analyze],
                 critical_scenarios=critical_scenarios,
                 defense_priorities=defense_priorities,
                 threat_coverage=threat_coverage,
+                vector_store_insights=vector_store_insights,
                 metadata={
                     "timestamp": datetime.now().isoformat(),
                     "total_paths_analyzed": len(raw_paths),
@@ -1071,6 +1096,7 @@ class AttackPathAnalyzer:
                     "critical_assets": targets[:10],
                     "llm_model": self.config.llm_model if self.config.enable_llm_enrichment else "None",
                     "llm_enrichment_enabled": self.config.enable_llm_enrichment,
+                    "vector_store_enabled": self.config.enable_vector_store,
                     "max_path_length": self.config.max_path_length
                 }
             )
@@ -1078,6 +1104,167 @@ class AttackPathAnalyzer:
         except Exception as e:
             self.logger.error(f"Attack path analysis failed: {e}", exc_info=True)
             raise
+    
+    def _process_vector_store(self, attack_paths: List[AttackPath], 
+                             dfd_data: Dict, defense_priorities: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Process attack paths with vector store for cross-project insights."""
+        try:
+            # Lazy import to avoid dependency if not used
+            from attack_path_vector_store import (
+                VectorStoreConfig, AttackPathVectorStore, 
+                VectorStoreIntegration, SearchQuery
+            )
+            
+            self.logger.info("="*60)
+            self.logger.info("VECTOR STORE PROCESSING STARTED")
+            self.logger.info(f"Qdrant URL: {self.config.qdrant_url}")
+            self.logger.info(f"Project Name: {self.config.project_name}")
+            self.logger.info(f"Number of paths to store: {len(attack_paths)}")
+            self.logger.info("="*60)
+            
+            # Create vector store configuration
+            vector_config = VectorStoreConfig(
+                qdrant_url=self.config.qdrant_url,
+                qdrant_api_key=self.config.qdrant_api_key
+            )
+            
+            # Initialize vector store
+            vector_store = AttackPathVectorStore(vector_config)
+            integration = VectorStoreIntegration(vector_store)
+            
+            # Prepare project metadata
+            project_metadata = {
+                "name": self.config.project_name,
+                "industry": self.config.project_industry or dfd_data.get("industry_context", "General"),
+                "tech_stack": self.config.project_tech_stack.split(",") if self.config.project_tech_stack else [],
+                "compliance": self.config.project_compliance.split(",") if self.config.project_compliance else [],
+                "analysis_date": datetime.now().isoformat(),
+                "dfd_components": {
+                    "external_entities": dfd_data.get("external_entities", []),
+                    "processes": dfd_data.get("processes", []),
+                    "assets": dfd_data.get("assets", [])
+                }
+            }
+            
+            self.logger.info(f"Project metadata prepared: {project_metadata['name']}")
+            
+            # Store attack paths and get insights
+            insights = {
+                "stored_paths": 0,
+                "similar_attacks": [],
+                "cross_project_patterns": [],
+                "enhanced_defenses": [],
+                "project_risk_comparison": {}
+            }
+            
+            # Store each attack path
+            for i, path in enumerate(attack_paths):
+                try:
+                    self.logger.info(f"Storing path {i+1}/{len(attack_paths)}: {path.path_id}")
+                    path_id = vector_store.store_attack_path(path, project_metadata)
+                    insights["stored_paths"] += 1
+                    self.logger.info(f"✓ Successfully stored path {path.path_id} with ID: {path_id}")
+                    
+                    # Find similar attacks from other projects
+                    similar_query = SearchQuery(
+                        query_type="path",
+                        query=path,
+                        filters={"exclude_project": project_metadata["name"]},
+                        limit=3,
+                        min_similarity=0.7
+                    )
+                    similar_paths = vector_store.search_similar_paths(similar_query)
+                    
+                    if similar_paths:
+                        self.logger.info(f"  Found {len(similar_paths)} similar paths")
+                        insights["similar_attacks"].append({
+                            "current_path": path.scenario_name,
+                            "similar_scenarios": [
+                                {
+                                    "scenario": sim[0].scenario_name,
+                                    "project": sim[2]["project"]["name"],
+                                    "similarity": round(sim[1], 3),
+                                    "defenses": sim[0].key_chokepoints[:3]
+                                }
+                                for sim in similar_paths
+                            ]
+                        })
+                    
+                    # Get enhanced defense recommendations
+                    defense_recs = vector_store.find_defense_recommendations(path, limit=3)
+                    for rec in defense_recs:
+                        insights["enhanced_defenses"].append({
+                            "path": path.scenario_name,
+                            "control": rec.control_name,
+                            "effectiveness": round(rec.effectiveness_score, 2),
+                            "evidence_count": rec.similar_paths_blocked
+                        })
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to process path {path.path_id} in vector store: {e}", exc_info=True)
+            
+            self.logger.info(f"Storage complete: {insights['stored_paths']} paths stored successfully")
+            
+            # Get cross-project patterns
+            try:
+                patterns = vector_store.identify_attack_patterns(min_frequency=2)
+                insights["cross_project_patterns"] = [
+                    {
+                        "pattern": p.pattern_name,
+                        "frequency": p.frequency,
+                        "projects_affected": len(p.affected_projects),
+                        "typical_impact": p.typical_impact,
+                        "common_defenses": p.common_defenses[:3]
+                    }
+                    for p in patterns[:5]
+                ]
+                self.logger.info(f"Identified {len(patterns)} attack patterns")
+            except Exception as e:
+                self.logger.warning(f"Failed to identify patterns: {e}")
+            
+            # Get project statistics and risk comparison
+            try:
+                project_stats = vector_store.get_project_statistics(project_metadata["name"])
+                insights["project_risk_comparison"] = {
+                    "current_project": {
+                        "name": project_metadata["name"],
+                        "risk_score": project_stats.get("risk_score", 0),
+                        "total_paths": project_stats.get("total_paths", 0),
+                        "critical_paths": project_stats.get("impact_distribution", {}).get("Critical", 0)
+                    }
+                }
+                self.logger.info(f"Project risk score: {project_stats.get('risk_score', 0)}")
+                
+                # Compare with similar projects if any found
+                if insights["similar_attacks"]:
+                    similar_projects = list(set(
+                        scenario["project"] 
+                        for attack in insights["similar_attacks"] 
+                        for scenario in attack["similar_scenarios"]
+                    ))[:3]
+                    
+                    comparison = vector_store.compare_projects([project_metadata["name"]] + similar_projects)
+                    insights["project_risk_comparison"]["comparison"] = comparison.get("risk_comparison", {})
+                    
+            except Exception as e:
+                self.logger.warning(f"Failed to get project statistics: {e}")
+            
+            self.logger.info("="*60)
+            self.logger.info(f"VECTOR STORE PROCESSING COMPLETE")
+            self.logger.info(f"Total paths stored: {insights['stored_paths']}")
+            self.logger.info(f"Similar attacks found: {len(insights['similar_attacks'])}")
+            self.logger.info(f"Patterns identified: {len(insights['cross_project_patterns'])}")
+            self.logger.info("="*60)
+            
+            return insights
+            
+        except ImportError as e:
+            self.logger.error(f"Vector store module not found: {e}")
+            self.logger.error("Please ensure attack_path_vector_store.py is in the same directory")
+            return {"error": "Vector store module not available"}
+        except Exception as e:
+            self.logger.error(f"Vector store processing failed: {e}", exc_info=True)
+            return {"error": str(e)}
 
 
 def main():
@@ -1145,6 +1332,28 @@ def main():
             print(f"  Entry: {path.entry_point} → Target: {path.target_asset}")
             print(f"  Steps: {path.total_steps} | Feasibility: {path.path_feasibility}")
             print(f"  Impact: {path.combined_impact} | Time: {path.time_to_compromise}")
+            
+        # Display vector store insights if available
+        if results.vector_store_insights and results.vector_store_insights.get("stored_paths", 0) > 0:
+            print("\n🔍 Vector Store Insights:")
+            insights = results.vector_store_insights
+            print(f"  Stored paths: {insights['stored_paths']}")
+            
+            if insights.get("similar_attacks"):
+                print(f"  Similar attacks found: {len(insights['similar_attacks'])}")
+                for attack in insights["similar_attacks"][:2]:
+                    print(f"    - {attack['current_path']} similar to:")
+                    for sim in attack["similar_scenarios"][:1]:
+                        print(f"      • {sim['scenario']} from {sim['project']} (similarity: {sim['similarity']})")
+                        
+            if insights.get("cross_project_patterns"):
+                print(f"  Cross-project patterns: {len(insights['cross_project_patterns'])}")
+                for pattern in insights["cross_project_patterns"][:2]:
+                    print(f"    - {pattern['pattern']} (seen {pattern['frequency']} times)")
+                    
+            if insights.get("project_risk_comparison", {}).get("current_project"):
+                risk_info = insights["project_risk_comparison"]["current_project"]
+                print(f"  Project risk score: {risk_info.get('risk_score', 'N/A')}/100")
             
         print("\n✅ Analysis completed successfully!")
         return 0
