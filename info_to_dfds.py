@@ -1,3 +1,12 @@
+# This Python script serves as an automated tool for threat modeling in cybersecurity, 
+# specifically extracting and structuring Data Flow Diagram (DFD) components from input documents (TXT or PDF files) describing system architectures. 
+# It loads environment variables to configure the LLM provider (Ollama or Scaleway) and model, initializes the appropriate LLM client with support for structured outputs via Instructor, 
+# and falls back to sample content if no documents are found. The script combines document contents, 
+# crafts a detailed prompt for chain-of-thought reasoning to identify key elements like project metadata, external entities, assets, processes, trust boundaries, 
+# and data flows (including details like protocols and authentication), then invokes the LLM to generate a validated JSON output conforming to a Pydantic schema. 
+# It includes comprehensive logging of prompts, responses, token usage, and performance metrics, handles errors gracefully, 
+# and saves the resulting DFD JSON to an output file for further use in security analysis.
+
 import os
 import json
 from langchain_core.prompts import ChatPromptTemplate
