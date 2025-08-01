@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
-DFD to Threats Generator Script
+DFD to Threats Generator Script - Improved Version
 
-This script analyzes DFD (Data Flow Diagram) components and generates threats
-using the STRIDE methodology. Compatible with the threat modeling pipeline.
+This script analyzes DFD (Data Flow Diagram) components and generates realistic threats
+using the STRIDE methodology with intelligent filtering and risk-based prioritization.
 
-Fixed version with improved error handling and compatibility.
+Key improvements:
+- Component-specific STRIDE mapping
+- Risk-based component prioritization
+- Advanced threat deduplication
+- Quality filtering for realistic results
 """
 
 import os
 import json
 import logging
+import difflib
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from enum import Enum
 import threading
 import time
@@ -38,8 +43,10 @@ def get_config():
         'scw_secret_key': os.getenv('SCW_SECRET_KEY') or os.getenv('SCW_API_KEY') or os.getenv('SCALEWAY_API_KEY'),
         'max_tokens': int(os.getenv('MAX_TOKENS', '2048')),
         'temperature': float(os.getenv('TEMPERATURE', '0.4')),
-        'max_workers': int(os.getenv('MAX_WORKERS', '1')),  # Sequential for stability
-        'log_level': os.getenv('LOG_LEVEL', 'INFO')
+        'max_workers': int(os.getenv('MAX_WORKERS', '1')),
+        'log_level': os.getenv('LOG_LEVEL', 'INFO'),
+        'max_components_to_analyze': int(os.getenv('MAX_COMPONENTS_TO_ANALYZE', '20')),
+        'min_risk_score': int(os.getenv('MIN_RISK_SCORE', '3'))
     }
 
 # Get configuration
@@ -55,36 +62,136 @@ logger = logging.getLogger(__name__)
 # Ensure directories exist
 os.makedirs(config['output_dir'], exist_ok=True)
 
+# --- Component-Specific STRIDE Mappings ---
+COMPONENT_STRIDE_MAPPING = {
+    'External Entity': ['S'],  # Primarily Spoofing concerns
+    'Process': ['S', 'T', 'R', 'I', 'D', 'E'],  # All STRIDE categories
+    'Data Store': ['T', 'R', 'I', 'D'],  # No Spoofing or Elevation typically
+    'Data Flow': ['T', 'I', 'D'],  # Tampering, Info Disclosure, DoS
+}
+
+# Risk-based threat limits per component type
+MAX_THREATS_PER_COMPONENT = {
+    'External Entity': 2,
+    'Process': 3,
+    'Data Store': 3,
+    'Data Flow': 2
+}
+
+# Risk assessment keywords
+HIGH_RISK_KEYWORDS = [
+    'database', 'db', 'store', 'repository', 'cache',
+    'authentication', 'auth', 'login', 'user',
+    'payment', 'financial', 'money', 'transaction',
+    'admin', 'management', 'control',
+    'api', 'service', 'server',
+    'external', 'third-party', 'internet'
+]
+
+TRUST_BOUNDARY_KEYWORDS = [
+    'external', 'internet', 'public', 'client',
+    'browser', 'mobile', 'api', 'web'
+]
+
 # --- Configuration ---
 class LLMProvider(Enum):
     SCALEWAY = "scaleway"
     OLLAMA = "ollama"
 
-# --- Simple data classes (avoiding Pydantic for compatibility) ---
-class Threat:
-    def __init__(self, component_name: str, stride_category: str, threat_description: str,
-                 mitigation_suggestion: str, impact: str, likelihood: str, 
-                 references: List[str] = None, risk_score: str = "Medium"):
-        self.component_name = component_name
-        self.stride_category = stride_category
-        self.threat_description = threat_description
-        self.mitigation_suggestion = mitigation_suggestion
-        self.impact = impact
-        self.likelihood = likelihood
-        self.references = references or []
-        self.risk_score = risk_score
+# --- STRIDE Definitions ---
+DEFAULT_STRIDE_DEFINITIONS = {
+    "S": ("Spoofing", "Illegitimately accessing systems or data by impersonating a user, process, or component."),
+    "T": ("Tampering", "Unauthorized modification of data, either in transit or at rest."),  
+    "R": ("Repudiation", "A user or system denying that they performed an action, often due to a lack of sufficient proof."),
+    "I": ("Information Disclosure", "Exposing sensitive information to unauthorized individuals."),
+    "D": ("Denial of Service", "Preventing legitimate users from accessing a system or service."),
+    "E": ("Elevation of Privilege", "A user or process gaining rights beyond their authorized level.")
+}
+
+def load_stride_definitions() -> Dict[str, tuple]:
+    """Load STRIDE definitions from file or use defaults."""
+    stride_config_path = os.path.join(config['output_dir'], "stride_config.json")
+    if os.path.exists(stride_config_path):
+        try:
+            with open(stride_config_path, 'r', encoding='utf-8') as f:
+                custom_stride = json.load(f)
+            logger.info(f"Loaded custom STRIDE definitions from '{stride_config_path}'")
+            return {k: (v[0], v[1]) if isinstance(v, list) else v for k, v in custom_stride.items()}
+        except Exception as e:
+            logger.warning(f"Failed to load custom STRIDE definitions: {e}. Using defaults.")
     
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'component_name': self.component_name,
-            'stride_category': self.stride_category,
-            'threat_description': self.threat_description,
-            'mitigation_suggestion': self.mitigation_suggestion,
-            'impact': self.impact,
-            'likelihood': self.likelihood,
-            'references': self.references,
-            'risk_score': self.risk_score
-        }
+    return DEFAULT_STRIDE_DEFINITIONS
+
+# --- Helper Functions ---
+def get_applicable_stride_categories(component_type: str) -> List[str]:
+    """Get only the applicable STRIDE categories for a component type."""
+    return COMPONENT_STRIDE_MAPPING.get(component_type, ['S', 'T', 'I'])  # Safe default
+
+def should_analyze_component_for_stride(component_type: str, stride_category: str) -> bool:
+    """Determine if a component should be analyzed for a specific STRIDE category."""
+    applicable_categories = get_applicable_stride_categories(component_type)
+    return stride_category in applicable_categories
+
+def calculate_component_risk_score(component: Dict[str, Any]) -> int:
+    """Calculate risk score for component prioritization."""
+    score = 1  # Base score
+    
+    name = component.get('name', '').lower()
+    comp_type = component.get('type', '').lower()
+    details = str(component.get('details', {})).lower()
+    
+    # High-risk component types
+    if comp_type == 'data store':
+        score += 3
+    elif comp_type == 'external entity':
+        score += 2
+    elif comp_type == 'process':
+        score += 1
+    
+    # Check for high-risk keywords
+    text_to_check = f"{name} {comp_type} {details}"
+    for keyword in HIGH_RISK_KEYWORDS:
+        if keyword in text_to_check:
+            score += 2
+            break
+    
+    # Trust boundary crossing
+    for keyword in TRUST_BOUNDARY_KEYWORDS:
+        if keyword in text_to_check:
+            score += 2
+            break
+    
+    # Data flows between different trust zones
+    if comp_type == 'data flow':
+        details_dict = component.get('details', {})
+        source = str(details_dict.get('source', '')).lower()
+        dest = str(details_dict.get('destination', '')).lower()
+        
+        # Cross-boundary flows are higher risk
+        external_sources = ['external', 'client', 'browser', 'internet']
+        internal_dests = ['database', 'server', 'internal', 'backend']
+        
+        if any(ext in source for ext in external_sources) and \
+           any(int_dest in dest for int_dest in internal_dests):
+            score += 3
+    
+    return min(score, 10)  # Cap at 10
+
+def prioritize_components(components: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Prioritize components based on risk factors."""
+    # Calculate scores and sort
+    for component in components:
+        component['_risk_score'] = calculate_component_risk_score(component)
+    
+    # Sort by risk score (highest first)
+    components.sort(key=lambda x: x.get('_risk_score', 0), reverse=True)
+    
+    return components
+
+def should_analyze_component(component: Dict[str, Any]) -> bool:
+    """Determine if component should be analyzed based on risk."""
+    risk_score = component.get('_risk_score', 0)
+    return risk_score >= config['min_risk_score']
 
 # --- LLM Client Factory ---
 class LLMClient:
@@ -102,7 +209,6 @@ class LLMClient:
                     logger.warning("No Scaleway API key found, LLM features will be disabled")
                     return
                 
-                # Try to import OpenAI
                 try:
                     from openai import OpenAI
                     self.client = OpenAI(
@@ -114,7 +220,6 @@ class LLMClient:
                     logger.warning("OpenAI library not available, LLM features will be disabled")
                     
             elif self.provider == LLMProvider.OLLAMA:
-                # For Ollama, we'll validate later when making requests
                 logger.info("Ollama client configured")
             else:
                 logger.error(f"Unsupported LLM provider: {self.provider}")
@@ -144,7 +249,6 @@ class LLMClient:
                 return response.choices[0].message.content
             
             elif self.provider == LLMProvider.OLLAMA:
-                # For Ollama, use requests if available
                 try:
                     import requests
                     
@@ -177,198 +281,376 @@ class LLMClient:
             logger.error(f"LLM generation error: {e}")
             raise
 
-# --- STRIDE Definitions ---
-DEFAULT_STRIDE_DEFINITIONS = {
-    "S": ("Spoofing", "Illegitimately accessing systems or data by impersonating a user, process, or component."),
-    "T": ("Tampering", "Unauthorized modification of data, either in transit or at rest."),
-    "R": ("Repudiation", "A user or system denying that they performed an action, often due to a lack of sufficient proof."),
-    "I": ("Information Disclosure", "Exposing sensitive information to unauthorized individuals."),
-    "D": ("Denial of Service", "Preventing legitimate users from accessing a system or service."),
-    "E": ("Elevation of Privilege", "A user or process gaining rights beyond their authorized level.")
-}
-
-def load_stride_definitions() -> Dict[str, tuple]:
-    """Load STRIDE definitions from file or use defaults."""
-    stride_config_path = os.path.join(config['output_dir'], "stride_config.json")
-    if os.path.exists(stride_config_path):
-        try:
-            with open(stride_config_path, 'r', encoding='utf-8') as f:
-                custom_stride = json.load(f)
-            logger.info(f"Loaded custom STRIDE definitions from '{stride_config_path}'")
-            # Convert to expected format
-            return {k: (v[0], v[1]) if isinstance(v, list) else v for k, v in custom_stride.items()}
-        except Exception as e:
-            logger.warning(f"Failed to load custom STRIDE definitions: {e}. Using defaults.")
-    
-    return DEFAULT_STRIDE_DEFINITIONS
-
 # --- Rule-based Threat Generator (Fallback) ---
 class RuleBasedThreatGenerator:
-    """Fallback threat generator using predefined rules."""
+    """Improved fallback threat generator using predefined rules."""
     
     def __init__(self):
         self.stride_definitions = load_stride_definitions()
     
-    def generate_threats_for_component(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate rule-based threats for a component."""
-        threats = []
+    def generate_threats_for_component(self, component: Dict[str, Any], stride_category: str) -> List[Dict[str, Any]]:
+        """Generate rule-based threats for a component and specific STRIDE category."""
         component_type = component.get('type', 'Unknown')
         component_name = component.get('name', 'Unknown')
         
-        if component_type == 'External Entity':
-            threats.extend(self._generate_external_entity_threats(component_name))
-        elif component_type == 'Process':
-            threats.extend(self._generate_process_threats(component_name))
-        elif component_type == 'Data Store':
-            threats.extend(self._generate_data_store_threats(component_name))
-        elif component_type == 'Data Flow':
-            threats.extend(self._generate_data_flow_threats(component))
+        threat_generators = {
+            'S': self._generate_spoofing_threats,
+            'T': self._generate_tampering_threats,
+            'R': self._generate_repudiation_threats,
+            'I': self._generate_information_disclosure_threats,
+            'D': self._generate_dos_threats,
+            'E': self._generate_elevation_threats
+        }
         
-        return threats
+        generator = threat_generators.get(stride_category)
+        if generator:
+            return generator(component_name, component_type, component.get('details', {}))
+        
+        return []
     
-    def _generate_external_entity_threats(self, name: str) -> List[Dict[str, Any]]:
-        """Generate threats for external entities."""
-        return [
-            {
+    def _generate_spoofing_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate spoofing threats."""
+        if comp_type == 'External Entity':
+            return [{
                 'component_name': name,
                 'stride_category': 'S',
-                'threat_description': f'An attacker could impersonate the {name} entity to gain unauthorized access.',
-                'mitigation_suggestion': 'Implement strong authentication mechanisms such as multi-factor authentication or certificates.',
+                'threat_description': f'An attacker could impersonate the {name} entity using stolen credentials or by exploiting weak authentication mechanisms to gain unauthorized system access.',
+                'mitigation_suggestion': 'Implement multi-factor authentication, certificate-based authentication, and regular credential rotation policies.',
                 'impact': 'High',
                 'likelihood': 'Medium',
                 'references': ['CWE-287: Improper Authentication', 'OWASP A07:2021 – Identification and Authentication Failures'],
                 'risk_score': 'High'
-            }
-        ]
-    
-    def _generate_process_threats(self, name: str) -> List[Dict[str, Any]]:
-        """Generate threats for processes."""
-        return [
-            {
+            }]
+        elif comp_type == 'Process':
+            return [{
                 'component_name': name,
-                'stride_category': 'T',
-                'threat_description': f'An attacker could tamper with the {name} process, modifying its behavior or data.',
-                'mitigation_suggestion': 'Implement input validation, code signing, and integrity checks.',
-                'impact': 'High',
-                'likelihood': 'Medium',
-                'references': ['CWE-20: Improper Input Validation', 'OWASP A03:2021 – Injection'],
-                'risk_score': 'High'
-            },
-            {
-                'component_name': name,
-                'stride_category': 'E',
-                'threat_description': f'An attacker could exploit vulnerabilities in {name} to gain elevated privileges.',
-                'mitigation_suggestion': 'Run processes with least privilege and implement proper access controls.',
-                'impact': 'Critical',
+                'stride_category': 'S',
+                'threat_description': f'An attacker could spoof the identity of the {name} process to other system components, potentially bypassing security controls.',
+                'mitigation_suggestion': 'Implement process authentication, code signing, and service-to-service authentication mechanisms.',
+                'impact': 'Medium',
                 'likelihood': 'Low',
-                'references': ['CWE-269: Improper Privilege Management', 'OWASP A01:2021 – Broken Access Control'],
-                'risk_score': 'High'
-            }
-        ]
-    
-    def _generate_data_store_threats(self, name: str) -> List[Dict[str, Any]]:
-        """Generate threats for data stores."""
-        return [
-            {
-                'component_name': name,
-                'stride_category': 'I',
-                'threat_description': f'Unauthorized access to {name} could result in sensitive data disclosure.',
-                'mitigation_suggestion': 'Implement database access controls, encryption at rest, and audit logging.',
-                'impact': 'Critical',
-                'likelihood': 'Medium',
-                'references': ['CWE-200: Exposure of Sensitive Information', 'OWASP A01:2021 – Broken Access Control'],
-                'risk_score': 'Critical'
-            },
-            {
-                'component_name': name,
-                'stride_category': 'T',
-                'threat_description': f'An attacker could modify or corrupt data stored in {name}.',
-                'mitigation_suggestion': 'Implement database integrity constraints and backup procedures.',
-                'impact': 'High',
-                'likelihood': 'Low',
-                'references': ['CWE-89: SQL Injection', 'OWASP A03:2021 – Injection'],
+                'references': ['CWE-346: Origin Validation Error', 'NIST SP 800-63B'],
                 'risk_score': 'Medium'
-            }
-        ]
+            }]
+        return []
     
-    def _generate_data_flow_threats(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Generate threats for data flows."""
-        details = component.get('details', {})
-        source = details.get('source', 'Unknown')
-        destination = details.get('destination', 'Unknown')
-        component_name = f"{source} → {destination}"
-        
-        return [
-            {
-                'component_name': component_name,
-                'stride_category': 'I',
-                'threat_description': f'Data transmitted between {source} and {destination} could be intercepted.',
-                'mitigation_suggestion': 'Use encryption in transit (TLS/HTTPS) and implement secure communication protocols.',
+    def _generate_tampering_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate tampering threats."""
+        if comp_type == 'Data Store':
+            return [{
+                'component_name': name,
+                'stride_category': 'T',
+                'threat_description': f'An attacker with database access could modify or corrupt critical data in {name}, leading to data integrity issues and business disruption.',
+                'mitigation_suggestion': 'Implement database access controls, audit logging, data integrity constraints, and regular backup verification.',
                 'impact': 'High',
                 'likelihood': 'Medium',
-                'references': ['CWE-319: Cleartext Transmission of Sensitive Information', 'OWASP A02:2021 – Cryptographic Failures'],
+                'references': ['CWE-89: SQL Injection', 'OWASP A03:2021 – Injection'],
                 'risk_score': 'High'
-            },
-            {
-                'component_name': component_name,
+            }]
+        elif comp_type == 'Data Flow':
+            source = details.get('source', 'source')
+            dest = details.get('destination', 'destination')
+            return [{
+                'component_name': name,
                 'stride_category': 'T',
-                'threat_description': f'An attacker could intercept and modify data between {source} and {destination}.',
-                'mitigation_suggestion': 'Implement message integrity checks and use authenticated encryption.',
+                'threat_description': f'An attacker could intercept and modify data transmitted between {source} and {dest} through man-in-the-middle attacks.',
+                'mitigation_suggestion': 'Use TLS encryption, implement message authentication codes (MAC), and validate data integrity at endpoints.',
                 'impact': 'High',
                 'likelihood': 'Medium',
                 'references': ['CWE-345: Insufficient Verification of Data Authenticity', 'OWASP A02:2021 – Cryptographic Failures'],
                 'risk_score': 'High'
-            }
-        ]
+            }]
+        return []
+    
+    def _generate_repudiation_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate repudiation threats."""
+        if comp_type in ['Process', 'Data Store']:
+            return [{
+                'component_name': name,
+                'stride_category': 'R',
+                'threat_description': f'Users or administrators could deny performing critical actions in {name} due to insufficient audit logging and non-repudiation controls.',
+                'mitigation_suggestion': 'Implement comprehensive audit logging, digital signatures for critical transactions, and tamper-evident log storage.',
+                'impact': 'Medium',
+                'likelihood': 'Low',
+                'references': ['CWE-778: Insufficient Logging', 'NIST SP 800-92'],
+                'risk_score': 'Medium'
+            }]
+        return []
+    
+    def _generate_information_disclosure_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate information disclosure threats."""
+        if comp_type == 'Data Store':
+            return [{
+                'component_name': name,
+                'stride_category': 'I',
+                'threat_description': f'Unauthorized access to {name} could result in exposure of sensitive data through inadequate access controls or data breaches.',
+                'mitigation_suggestion': 'Implement role-based access control, data encryption at rest, data classification, and regular access reviews.',
+                'impact': 'Critical',
+                'likelihood': 'Medium',
+                'references': ['CWE-200: Exposure of Sensitive Information', 'OWASP A01:2021 – Broken Access Control'],
+                'risk_score': 'Critical'
+            }]
+        elif comp_type == 'Data Flow':
+            return [{
+                'component_name': name,
+                'stride_category': 'I',
+                'threat_description': f'Sensitive data transmitted through {name} could be intercepted by attackers through network sniffing or inadequate encryption.',
+                'mitigation_suggestion': 'Use strong encryption in transit (TLS 1.3), implement proper key management, and avoid transmitting sensitive data when possible.',
+                'impact': 'High',
+                'likelihood': 'Medium',
+                'references': ['CWE-319: Cleartext Transmission of Sensitive Information', 'OWASP A02:2021 – Cryptographic Failures'],
+                'risk_score': 'High'
+            }]
+        return []
+    
+    def _generate_dos_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate denial of service threats."""
+        if comp_type in ['Process', 'Data Store']:
+            return [{
+                'component_name': name,
+                'stride_category': 'D',
+                'threat_description': f'An attacker could overwhelm {name} with excessive requests or resource consumption, causing service unavailability for legitimate users.',
+                'mitigation_suggestion': 'Implement rate limiting, resource quotas, DDoS protection, and proper capacity planning with monitoring.',
+                'impact': 'Medium',
+                'likelihood': 'Medium',
+                'references': ['CWE-400: Uncontrolled Resource Consumption', 'OWASP A06:2021 – Vulnerable and Outdated Components'],
+                'risk_score': 'Medium'
+            }]
+        return []
+    
+    def _generate_elevation_threats(self, name: str, comp_type: str, details: Dict) -> List[Dict[str, Any]]:
+        """Generate privilege escalation threats."""
+        if comp_type == 'Process':
+            return [{
+                'component_name': name,
+                'stride_category': 'E',
+                'threat_description': f'An attacker could exploit vulnerabilities in {name} to gain elevated privileges beyond their authorized access level.',
+                'mitigation_suggestion': 'Run processes with least privilege, implement proper input validation, use sandboxing, and regular security updates.',
+                'impact': 'Critical',
+                'likelihood': 'Low',
+                'references': ['CWE-269: Improper Privilege Management', 'OWASP A01:2021 – Broken Access Control'],
+                'risk_score': 'High'
+            }]
+        return []
 
-# --- Threat Analysis ---
-class ThreatAnalyzer:
+# --- Advanced Threat Processing ---
+def normalize_text(text: str) -> str:
+    """Normalize text for comparison."""
+    import re
+    text = re.sub(r'\s+', ' ', text.lower().strip())
+    text = re.sub(r'\b(an?|the)\b', '', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    return text
+
+def are_similar_threats(threat1: Dict, threat2: Dict, threshold: float = 0.7) -> bool:
+    """Check if two threats are semantically similar."""
+    desc1 = normalize_text(threat1.get('threat_description', ''))
+    desc2 = normalize_text(threat2.get('threat_description', ''))
+    
+    # Same component and STRIDE category
+    if (threat1.get('component_name') == threat2.get('component_name') and 
+        threat1.get('stride_category') == threat2.get('stride_category')):
+        
+        similarity = difflib.SequenceMatcher(None, desc1, desc2).ratio()
+        return similarity > threshold
+    
+    return False
+
+def advanced_threat_deduplication(threats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Advanced deduplication based on semantic similarity."""
+    unique_threats = []
+    processed_indices: Set[int] = set()
+    
+    for i, threat in enumerate(threats):
+        if i in processed_indices:
+            continue
+        
+        # Find similar threats
+        similar_threats = [threat]
+        for j, other_threat in enumerate(threats[i+1:], i+1):
+            if j not in processed_indices and are_similar_threats(threat, other_threat):
+                similar_threats.append(other_threat)
+                processed_indices.add(j)
+        
+        # Keep the threat with highest risk score
+        risk_order = {'Critical': 4, 'High': 3, 'Medium': 2, 'Low': 1}
+        best_threat = max(similar_threats, 
+                         key=lambda t: risk_order.get(t.get('risk_score', 'Low'), 0))
+        
+        unique_threats.append(best_threat)
+        processed_indices.add(i)
+    
+    return unique_threats
+
+def filter_quality_threats(threats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Filter out low-quality or generic threats."""
+    GENERIC_PHRASES = [
+        'an attacker could',
+        'unauthorized access',
+        'malicious user might',
+        'potential security risk',
+        'vulnerability may exist'
+    ]
+    
+    MIN_DESCRIPTION_LENGTH = 50
+    quality_threats = []
+    
+    for threat in threats:
+        description = threat.get('threat_description', '').lower()
+        
+        # Skip if too short
+        if len(description) < MIN_DESCRIPTION_LENGTH:
+            continue
+        
+        # Skip if too generic (more than 2 generic phrases)
+        generic_count = sum(1 for phrase in GENERIC_PHRASES if phrase in description)
+        if generic_count > 2:
+            continue
+        
+        # Skip if mitigation is too vague
+        mitigation = threat.get('mitigation_suggestion', '')
+        if len(mitigation) < 30 or 'implement security measures' in mitigation.lower():
+            continue
+        
+        quality_threats.append(threat)
+    
+    return quality_threats
+
+# --- Improved Threat Analyzer ---
+class ImprovedThreatAnalyzer:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client
         self.stride_definitions = load_stride_definitions()
         self.rule_generator = RuleBasedThreatGenerator()
+        
+        # Focused prompt for realistic threat analysis
         self.threat_prompt_template = """
-You are a cybersecurity architect specializing in threat modeling using the STRIDE methodology.
-Your task is to generate 1-2 specific threats for a given DFD component, focusing ONLY on a single STRIDE category.
+You are a cybersecurity architect specializing in realistic threat modeling. Analyze this DFD component and generate ONLY the 1-2 most realistic and significant threats for the specified STRIDE category.
 
-**DFD Component to Analyze:**
+**Component:**
 {component_info}
 
-**STRIDE Category to Focus On:**
-- **{stride_category} ({stride_name}):** {stride_definition}
+**STRIDE Category:** {stride_category} ({stride_name})
+{stride_definition}
 
-**Instructions:**
-1. Generate 1-2 distinct and realistic threats for the component that fall **strictly** under the '{stride_name}' category.
-2. Be specific and relate the threat directly to the component's type and details.
-3. Provide actionable mitigation suggestions based on industry best practices.
-4. Provide a realistic risk assessment (Impact, Likelihood, Score).
-5. Include relevant security references or standards.
-6. Output ONLY a valid JSON object with a single key "threats", containing a list of threat objects.
+**Requirements:**
+1. Generate ONLY 1-2 threats that are:
+   - Realistic and technically feasible
+   - Specific to this component type and context
+   - Significant business/security impact
+   - Based on actual attack patterns
+2. Avoid generic threats - be specific to the component's function
+3. Focus on threats that cross trust boundaries or affect critical assets
+4. Each threat must be distinct and actionable
 
-**JSON Schema:**
+**Output valid JSON only:**
 {{
   "threats": [
     {{
-      "component_name": "string",
+      "component_name": "{component_name}",
       "stride_category": "{stride_category}",
-      "threat_description": "string (be specific and detailed)",
-      "mitigation_suggestion": "string (actionable recommendations)",
+      "threat_description": "Specific, realistic threat description focusing on actual attack scenarios",
+      "mitigation_suggestion": "Actionable, specific mitigation strategies with implementation details",
       "impact": "Low|Medium|High",
       "likelihood": "Low|Medium|High",
-      "references": ["string (security standards, best practices)"],
+      "references": ["Relevant security standards or attack frameworks"],
       "risk_score": "Critical|High|Medium|Low"
     }}
   ]
 }}
-
-**Example for reference:**
-If analyzing a Database component for Information Disclosure:
-- Threat: SQL injection allowing unauthorized data access
-- Mitigation: Input validation, parameterized queries, least privilege access
-- Impact: High (sensitive data exposure)
-- Likelihood: Medium (common attack vector)
-- Risk Score: High
 """
+    
+    def analyze_component(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Analyze component with improved filtering and realistic threat generation."""
+        component_name = component.get("name", "Unknown")
+        component_type = component.get("type", "Unknown")
+        
+        logger.info(f"Analyzing component: {component_name} ({component_type})")
+        
+        # Get applicable STRIDE categories for this component type
+        applicable_categories = get_applicable_stride_categories(component_type)
+        max_threats = MAX_THREATS_PER_COMPONENT.get(component_type, 2)
+        
+        logger.info(f"  Applicable STRIDE categories: {applicable_categories}")
+        
+        all_threats = []
+        
+        # Analyze only applicable categories
+        for cat_letter in applicable_categories:
+            if cat_letter not in self.stride_definitions:
+                continue
+                
+            cat_name, cat_def = self.stride_definitions[cat_letter]
+            logger.info(f"  Analyzing {cat_name}")
+            
+            try:
+                if self.llm and self.llm.client:
+                    threats = self._analyze_with_llm(component, cat_letter, cat_name, cat_def)
+                else:
+                    threats = self._analyze_with_rules(component, cat_letter)
+                
+                # Limit threats per category to 1 for focus
+                threats = threats[:1]
+                all_threats.extend(threats)
+                
+            except Exception as e:
+                logger.warning(f"    Error analyzing {cat_name}: {e}")
+                continue
+        
+        # Limit total threats per component
+        all_threats = all_threats[:max_threats]
+        
+        logger.info(f"  Generated {len(all_threats)} threat(s)")
+        return all_threats
+    
+    def _analyze_with_llm(self, component: Dict[str, Any], cat_letter: str, 
+                         cat_name: str, cat_def: str) -> List[Dict[str, Any]]:
+        """Analyze with LLM using improved prompt."""
+        component_str = json.dumps(component, indent=2)
+        component_name = component.get("name", "Unknown")
+        
+        prompt = self.threat_prompt_template.format(
+            component_info=component_str,
+            component_name=component_name,
+            stride_category=cat_letter,
+            stride_name=cat_name,
+            stride_definition=cat_def
+        )
+        
+        response = self.llm.generate(prompt, json_mode=True)
+        
+        # Clean and parse response
+        response = response.strip()
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.endswith("```"):
+            response = response[:-3]
+        
+        try:
+            data = json.loads(response)
+            
+            if isinstance(data, dict) and isinstance(data.get("threats"), list):
+                threats = data["threats"]
+                
+                # Post-process threats
+                for threat in threats:
+                    threat['component_name'] = component_name
+                    threat['risk_score'] = self.calculate_risk_score(
+                        threat.get('impact', 'Low'),
+                        threat.get('likelihood', 'Low')
+                    )
+                    if not isinstance(threat.get('references'), list):
+                        threat['references'] = [f"OWASP Top 10", f"STRIDE {cat_name}"]
+                
+                return threats
+        except json.JSONDecodeError as e:
+            logger.warning(f"    JSON decode error: {e}")
+        
+        return []
+    
+    def _analyze_with_rules(self, component: Dict[str, Any], cat_letter: str) -> List[Dict[str, Any]]:
+        """Analyze with rules, filtered by category."""
+        return self.rule_generator.generate_threats_for_component(component, cat_letter)
     
     def calculate_risk_score(self, impact: str, likelihood: str) -> str:
         """Calculate risk score based on impact and likelihood."""
@@ -380,91 +662,6 @@ If analyzing a Database component for Information Disclosure:
             return "Medium"
         else:
             return "Low"
-    
-    def analyze_component(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Analyze a single component for all STRIDE categories."""
-        component_name = component.get("name", component.get("details", {}).get("name", component.get("type", "Unknown")))
-        
-        logger.info(f"Analyzing component: {component_name}")
-        
-        # If LLM is not available, use rule-based generation
-        if not self.llm or not self.llm.client:
-            logger.info(f"  Using rule-based threat generation")
-            return self.rule_generator.generate_threats_for_component(component)
-        
-        # Use LLM-based generation
-        component_str = json.dumps(component, indent=2)
-        all_threats = []
-        
-        for cat_letter, (cat_name, cat_def) in self.stride_definitions.items():
-            logger.info(f"  Generating threats for STRIDE category: {cat_name}")
-            
-            prompt = self.threat_prompt_template.format(
-                component_info=component_str,
-                stride_category=cat_letter,
-                stride_name=cat_name,
-                stride_definition=cat_def
-            )
-            
-            try:
-                response = self.llm.generate(prompt, json_mode=True)
-                
-                # Clean response if needed
-                response = response.strip()
-                if response.startswith("```json"):
-                    response = response[7:]
-                if response.endswith("```"):
-                    response = response[:-3]
-                
-                data = json.loads(response)
-                
-                if isinstance(data, dict) and isinstance(data.get("threats"), list):
-                    threats = data["threats"]
-                    
-                    # Post-process threats
-                    for threat in threats:
-                        # Ensure component name
-                        if not threat.get('component_name'):
-                            threat['component_name'] = component_name
-                        
-                        # Recalculate risk score
-                        threat['risk_score'] = self.calculate_risk_score(
-                            threat.get('impact', 'Low'),
-                            threat.get('likelihood', 'Low')
-                        )
-                        
-                        # Ensure references is a list
-                        if not isinstance(threat.get('references'), list):
-                            threat['references'] = []
-                        
-                        # Add default references if none provided
-                        if not threat['references']:
-                            threat['references'] = [
-                                "OWASP Top 10",
-                                "NIST Cybersecurity Framework",
-                                f"STRIDE {cat_name} category best practices"
-                            ]
-                    
-                    all_threats.extend(threats)
-                    logger.info(f"    Generated {len(threats)} threat(s)")
-                else:
-                    logger.warning(f"    Invalid response format for {cat_name}")
-                
-            except json.JSONDecodeError as e:
-                logger.warning(f"    JSON decode error for {cat_name}: {e}")
-                logger.info(f"    Falling back to rule-based generation for this category")
-                # Fall back to rule-based for this category
-                if cat_letter in ['S', 'T', 'I']:  # Most important categories
-                    fallback_threats = self.rule_generator.generate_threats_for_component(component)
-                    category_threats = [t for t in fallback_threats if t.get('stride_category') == cat_letter]
-                    all_threats.extend(category_threats)
-                    
-            except Exception as e:
-                logger.warning(f"    Error generating threats for {cat_name}: {e}")
-                # Continue with other categories
-                continue
-        
-        return all_threats
 
 # --- Main Functions ---
 def load_dfd_data(filepath: str) -> Dict[str, Any]:
@@ -473,7 +670,7 @@ def load_dfd_data(filepath: str) -> Dict[str, Any]:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
-        # Handle nested structure - check if 'dfd' key exists
+        # Handle nested structure
         if 'dfd' in data:
             logger.info("Found nested DFD structure, extracting 'dfd' content")
             return data['dfd']
@@ -490,10 +687,9 @@ def extract_components(dfd_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract analyzable components from DFD data."""
     components = []
     
-    # Map of component types to their expected structure
     component_mappings = {
         'external_entities': 'External Entity',
-        'processes': 'Process',
+        'processes': 'Process', 
         'assets': 'Data Store',
         'data_stores': 'Data Store',
         'data_flows': 'Data Flow'
@@ -504,42 +700,24 @@ def extract_components(dfd_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             items = dfd_data[key]
             if isinstance(items, list):
                 for item in items:
-                    # Handle different data structures
                     if isinstance(item, str):
-                        # Simple string identifier
                         components.append({
                             "type": component_type,
                             "name": item,
                             "details": {"identifier": item}
                         })
                     elif isinstance(item, dict):
-                        # Complex object with properties
                         component = {
                             "type": component_type,
                             "name": item.get('name', item.get('source', item.get('destination', 'Unknown'))),
                             "details": item
                         }
-                        # For data flows, create a more descriptive name
+                        # For data flows, create descriptive name
                         if key == 'data_flows' and 'source' in item and 'destination' in item:
                             component['name'] = f"{item['source']} → {item['destination']}"
                         components.append(component)
     
     return components
-
-def deduplicate_threats(threats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Remove duplicate threats based on description."""
-    unique_threats = []
-    seen_descriptions = set()
-    
-    for threat in threats:
-        desc = threat.get('threat_description', '')
-        # Create a simplified version for comparison
-        simplified_desc = desc.lower().strip()
-        if simplified_desc and simplified_desc not in seen_descriptions:
-            seen_descriptions.add(simplified_desc)
-            unique_threats.append(threat)
-    
-    return unique_threats
 
 def write_progress(step: int, current: int, total: int, message: str, details: str = ""):
     """Write progress information to a file that the frontend can read."""
@@ -573,8 +751,8 @@ def check_kill_signal(step: int) -> bool:
         return False
 
 def main():
-    """Main execution function."""
-    logger.info("=== Starting Threat Modeling Analysis ===")
+    """Improved main execution function with realistic threat generation."""
+    logger.info("=== Starting Realistic Threat Modeling Analysis ===")
     
     # Initialize progress
     write_progress(3, 0, 100, "Initializing threat analysis", "Loading components")
@@ -588,20 +766,34 @@ def main():
         else:
             logger.info("LLM client not available, using rule-based generation")
         
-        analyzer = ThreatAnalyzer(llm_client)
+        analyzer = ImprovedThreatAnalyzer(llm_client)
     except Exception as e:
         logger.warning(f"Failed to initialize LLM services: {e}")
         logger.info("Continuing with rule-based threat generation")
-        analyzer = ThreatAnalyzer(None)
+        analyzer = ImprovedThreatAnalyzer(None)
     
-    # Load DFD data
+    # Load and prioritize components
     try:
         write_progress(3, 10, 100, "Loading DFD data", "Reading component definitions")
         dfd_data = load_dfd_data(config['dfd_input_path'])
         components = extract_components(dfd_data)
-        logger.info(f"Found {len(components)} components to analyze")
         
-        # Log component types for debugging
+        # Prioritize components by risk
+        components = prioritize_components(components)
+        
+        # Filter to only analyze high-risk components
+        high_risk_components = [c for c in components if should_analyze_component(c)]
+        
+        # Limit total components to analyze
+        max_components = config['max_components_to_analyze']
+        if len(high_risk_components) > max_components:
+            logger.info(f"Limiting analysis to top {max_components} highest risk components")
+            high_risk_components = high_risk_components[:max_components]
+        
+        logger.info(f"Total components: {len(components)}")
+        logger.info(f"High-risk components to analyze: {len(high_risk_components)}")
+        
+        # Log component breakdown
         component_types = {}
         for comp in components:
             comp_type = comp.get('type', 'Unknown')
@@ -611,61 +803,65 @@ def main():
         for comp_type, count in component_types.items():
             logger.info(f"  - {comp_type}: {count}")
         
-        write_progress(3, 20, 100, "Components loaded", f"Found {len(components)} components")
+        # Log the components we're analyzing
+        logger.info("Components selected for analysis:")
+        for comp in high_risk_components[:10]:  # Log first 10
+            logger.info(f"  - {comp.get('name')} ({comp.get('type')}) [Risk: {comp.get('_risk_score')}]")
+        
+        write_progress(3, 20, 100, "Components loaded", f"Found {len(high_risk_components)} high-risk components")
     
     except Exception as e:
         logger.error(f"Failed to load or parse DFD data: {e}")
         write_progress(3, 0, 100, "Failed", f"Error: {str(e)}")
         return 1
     
-    # Analyze components sequentially for stability
-    logger.info("Analyzing components sequentially for stability")
+    # Analyze components
+    logger.info("Analyzing components sequentially for stability and quality")
     all_threats = []
-    
-    # Calculate progress steps
-    total_steps = len(components) * len(DEFAULT_STRIDE_DEFINITIONS)  # Each component analyzed for each STRIDE category
-    current_step = 0
     base_progress = 20
     analysis_progress_range = 70  # 20-90% for analysis
     
-    for i, component in enumerate(components):
+    for i, component in enumerate(high_risk_components):
         try:
             # Check for kill signal
             if check_kill_signal(3):
-                write_progress(3, current_step, total_steps, "Analysis cancelled", "User requested stop")
+                write_progress(3, 90, 100, "Analysis cancelled", "User requested stop")
                 return 1
             
             component_name = component.get('name', 'Unknown')
-            logger.info(f"Analyzing component {i+1}/{len(components)}: {component_name}")
+            logger.info(f"Analyzing component {i+1}/{len(high_risk_components)}: {component_name}")
             
-            # Update progress at component level
-            component_progress = base_progress + int((i / len(components)) * analysis_progress_range)
+            # Update progress
+            component_progress = base_progress + int((i / len(high_risk_components)) * analysis_progress_range)
             write_progress(
                 3, 
                 component_progress, 
                 100, 
-                f"Analyzing component {i+1}/{len(components)}", 
+                f"Analyzing component {i+1}/{len(high_risk_components)}", 
                 f"Processing: {component_name}"
             )
             
             threats = analyzer.analyze_component(component)
             all_threats.extend(threats)
             
-            # Update step counter
-            current_step += len(DEFAULT_STRIDE_DEFINITIONS)
-            
-            # Small delay to avoid overwhelming the API
+            # Rate limiting for better quality
             if llm_client and llm_client.client:
-                time.sleep(0.5)
+                time.sleep(1)  # Longer delay for more thoughtful analysis
             
         except Exception as e:
             logger.error(f"Error analyzing component {component_name}: {e}")
             continue
     
-    # Post-process results
+    logger.info(f"Generated {len(all_threats)} initial threats")
+    
+    # Advanced post-processing
     write_progress(3, 90, 100, "Post-processing threats", "Removing duplicates")
-    all_threats = deduplicate_threats(all_threats)
-    logger.info(f"Generated {len(all_threats)} unique threats")
+    all_threats = advanced_threat_deduplication(all_threats)
+    logger.info(f"After deduplication: {len(all_threats)} threats")
+    
+    write_progress(3, 93, 100, "Post-processing threats", "Quality filtering")
+    all_threats = filter_quality_threats(all_threats)
+    logger.info(f"After quality filtering: {len(all_threats)} threats")
     
     if not all_threats:
         logger.error("No threats were generated!")
@@ -677,7 +873,14 @@ def main():
     risk_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
     all_threats.sort(key=lambda t: risk_order.get(t.get('risk_score', 'Low'), 0), reverse=True)
     
-    # Create output
+    # Create comprehensive output
+    risk_breakdown = {
+        "Critical": sum(1 for t in all_threats if t.get('risk_score') == 'Critical'),
+        "High": sum(1 for t in all_threats if t.get('risk_score') == 'High'),
+        "Medium": sum(1 for t in all_threats if t.get('risk_score') == 'Medium'),
+        "Low": sum(1 for t in all_threats if t.get('risk_score') == 'Low')
+    }
+    
     output = {
         "threats": all_threats,
         "metadata": {
@@ -686,8 +889,13 @@ def main():
             "llm_provider": config['llm_provider'],
             "llm_model": config['llm_model'],
             "total_threats": len(all_threats),
-            "components_analyzed": len(components),
+            "total_components": len(components),
+            "components_analyzed": len(high_risk_components),
             "generation_method": "LLM" if (llm_client and llm_client.client) else "Rule-based",
+            "analysis_approach": "Risk-based with STRIDE filtering",
+            "min_risk_score": config['min_risk_score'],
+            "max_components_analyzed": config['max_components_to_analyze'],
+            "risk_breakdown": risk_breakdown,
             "dfd_structure": {
                 "project_name": dfd_data.get('project_name', 'Unknown'),
                 "industry_context": dfd_data.get('industry_context', 'Unknown')
@@ -695,7 +903,7 @@ def main():
         }
     }
     
-    # Validate basic structure
+    # Validate output structure
     if not isinstance(output.get('threats'), list):
         logger.error("Invalid output structure - threats must be a list")
         return 1
@@ -721,22 +929,25 @@ def main():
             json.dump(output, f, indent=2, ensure_ascii=False)
         
         logger.info(f"Results saved to '{config['threats_output_path']}'")
-        write_progress(3, 100, 100, "Complete", f"Generated {len(all_threats)} threats")
+        write_progress(3, 100, 100, "Complete", f"Generated {len(all_threats)} realistic threats")
     except Exception as e:
         logger.error(f"Failed to save results: {e}")
         write_progress(3, 100, 100, "Failed", f"Save error: {str(e)}")
         return 1
     
-    logger.info("=== Threat Modeling Analysis Complete ===")
+    logger.info("=== Realistic Threat Modeling Analysis Complete ===")
     
-    # Print summary
-    print(f"\nSummary:")
-    print(f"- Components analyzed: {len(components)}")
-    print(f"- Total threats identified: {len(all_threats)}")
-    print(f"- Critical threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Critical')}")
-    print(f"- High threats: {sum(1 for t in all_threats if t.get('risk_score') == 'High')}")
-    print(f"- Medium threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Medium')}")
-    print(f"- Low threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Low')}")
+    # Print comprehensive summary
+    print(f"\n=== Realistic Threat Analysis Summary ===")
+    print(f"Total components in DFD: {len(components)}")
+    print(f"High-risk components analyzed: {len(high_risk_components)}")
+    print(f"Total realistic threats identified: {len(all_threats)}")
+    print(f"Critical threats: {risk_breakdown['Critical']}")
+    print(f"High threats: {risk_breakdown['High']}")
+    print(f"Medium threats: {risk_breakdown['Medium']}")
+    print(f"Low threats: {risk_breakdown['Low']}")
+    print(f"Analysis method: {'LLM-based' if (llm_client and llm_client.client) else 'Rule-based'}")
+    print(f"Average threats per component: {len(all_threats) / len(high_risk_components):.1f}")
     
     # Clean up progress file
     try:

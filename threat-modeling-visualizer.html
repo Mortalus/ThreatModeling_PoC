@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced Threat Modeling Pipeline</title>
+    <title>Advanced Threat Modeling Pipeline with Review System</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -125,6 +126,30 @@
         .pipeline-step.running {
             border-left-color: #f59e0b;
             background: rgba(245, 158, 11, 0.1);
+        }
+
+        .pipeline-step.has-review {
+            position: relative;
+        }
+
+        .pipeline-step.has-review::before {
+            content: '';
+            position: absolute;
+            right: 50px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 10px;
+            height: 10px;
+            background: #f59e0b;
+            border-radius: 50%;
+            box-shadow: 0 0 5px rgba(245, 158, 11, 0.5);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; transform: translateY(-50%) scale(1); }
+            50% { opacity: 0.8; transform: translateY(-50%) scale(1.1); }
+            100% { opacity: 1; transform: translateY(-50%) scale(1); }
         }
 
         .step-title {
@@ -244,22 +269,6 @@
             margin-bottom: 25px;
             padding-bottom: 20px;
             border-bottom: 2px solid #2d3548;
-        }
-
-        /* Configuration Panel */
-        .config-panel {
-            background: #0a0e1a;
-            border: 2px solid #2d3548;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-        }
-
-        .config-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
         }
 
         /* Console */
@@ -393,6 +402,24 @@
             border: 1px solid rgba(245, 158, 11, 0.3);
         }
 
+        .tag-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .tag-danger {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .tag-info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
         /* JSON Viewer */
         .json-viewer {
             background: #0a0e1a;
@@ -404,6 +431,43 @@
             font-size: 0.95em;
             line-height: 1.6;
         }
+
+        /* Review Interface Styles */
+        .review-interface {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .review-item-card {
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, rgba(59, 130, 246, 0.05) 100%);
+            border: 2px solid #8b5cf6;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+
+        .confidence-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .confidence-bar {
+            width: 100px;
+            height: 8px;
+            background: #2d3548;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .confidence-high { background: #10b981; }
+        .confidence-medium { background: #f59e0b; }
+        .confidence-low { background: #ef4444; }
 
         /* Status Indicators */
         .status-indicator {
@@ -422,24 +486,6 @@
         .status-indicator.disconnected {
             background: #ef4444;
             box-shadow: 0 0 5px rgba(239, 68, 68, 0.5);
-        }
-
-        /* Configuration Status */
-        .config-status {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            padding: 15px 20px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-
-        .config-status-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.9em;
         }
 
         /* JSON Syntax Highlighting */
@@ -504,13 +550,20 @@
             background: #3b82f6;
         }
 
-        .json-error {
-            color: #ef4444;
-            background: rgba(239, 68, 68, 0.1);
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-top: 15px;
-            border: 1px solid rgba(239, 68, 68, 0.3);
+        /* Progress Bar */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #1a1f2e;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #8b5cf6 0%, #3b82f6 100%);
+            transition: width 0.3s ease;
         }
 
         /* Scrollbar */
@@ -532,20 +585,59 @@
             background: #374151;
         }
 
-        /* Progress Bar */
-        .progress-bar {
-            width: 100%;
-            height: 8px;
-            background: #1a1f2e;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-top: 10px;
+        /* Checkbox */
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #8b5cf6;
         }
 
-        .progress-bar-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #8b5cf6 0%, #3b82f6 100%);
-            transition: width 0.3s ease;
+        /* Batch Review Styles */
+        .batch-review-item {
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            border-bottom: 1px solid #2d3548;
+            transition: background 0.2s ease;
+        }
+
+        .batch-review-item:hover {
+            background: rgba(139, 92, 246, 0.05);
+        }
+
+        .batch-review-item.selected {
+            background: rgba(139, 92, 246, 0.1);
+        }
+
+        /* Review Dashboard Stats */
+        .review-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .review-stat-card {
+            background: #0a0e1a;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #2d3548;
+        }
+
+        .review-stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .review-stat-label {
+            font-size: 0.9em;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
     </style>
 </head>
@@ -555,6 +647,9 @@
     <script type="text/babel">
         // API endpoints
         const API_BASE = 'http://localhost:5000/api';
+        
+        // Initialize Socket.IO
+        const socket = io('http://localhost:5000');
 
         // JSON Syntax Highlighter
         const highlightJSON = (json) => {
@@ -592,7 +687,414 @@
             );
         };
 
-        // Main App Component
+        // Confidence Indicator Component
+        const ConfidenceIndicator = ({ confidence }) => (
+            <div className="confidence-indicator">
+                <div className="confidence-bar">
+                    <div 
+                        className={`confidence-fill ${
+                            confidence > 0.8 ? 'confidence-high' : 
+                            confidence > 0.5 ? 'confidence-medium' : 'confidence-low'
+                        }`}
+                        style={{width: `${confidence * 100}%`}}
+                    />
+                </div>
+                <span style={{fontSize: '0.9em', color: '#9ca3af'}}>
+                    {(confidence * 100).toFixed(0)}%
+                </span>
+            </div>
+        );
+
+        // Review Interface Component
+        const ReviewInterface = ({ stepReview, onComplete }) => {
+            const [currentItemIndex, setCurrentItemIndex] = React.useState(0);
+            const [reviewData, setReviewData] = React.useState({});
+            const [loading, setLoading] = React.useState(true);
+            const [reviewItems, setReviewItems] = React.useState([]);
+            const [reviewer, setReviewer] = React.useState(
+                localStorage.getItem('reviewer_name') || ''
+            );
+
+            React.useEffect(() => {
+                loadReviewItems();
+            }, [stepReview.stepIndex]);
+
+            const loadReviewItems = async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/review-queue/${stepReview.stepIndex}`);
+                    const data = await response.json();
+                    setReviewItems(data.items || []);
+                    setLoading(false);
+                } catch (error) {
+                    console.error('Failed to load review items:', error);
+                    setLoading(false);
+                }
+            };
+
+            const currentItem = reviewItems[currentItemIndex];
+
+            const submitReview = async (decision) => {
+                if (!reviewer) {
+                    alert('Please enter your name to submit reviews');
+                    return;
+                }
+
+                localStorage.setItem('reviewer_name', reviewer);
+
+                const corrections = reviewData[currentItem.id] || {};
+                
+                try {
+                    const response = await fetch(`${API_BASE}/review-item/${currentItem.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            reviewer,
+                            decision,
+                            corrections,
+                            comments: corrections.comments
+                        })
+                    });
+
+                    if (response.ok) {
+                        // Move to next item or complete
+                        if (currentItemIndex < reviewItems.length - 1) {
+                            setCurrentItemIndex(currentItemIndex + 1);
+                        } else {
+                            onComplete();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Review submission failed:', error);
+                }
+            };
+
+            if (loading) {
+                return <div className="loading-spinner"></div>;
+            }
+
+            if (reviewItems.length === 0) {
+                return (
+                    <div className="card" style={{textAlign: 'center', padding: '60px'}}>
+                        <div style={{fontSize: '3em', marginBottom: '20px'}}>✅</div>
+                        <h3>No items need review</h3>
+                        <p style={{color: '#9ca3af', marginTop: '10px'}}>
+                            All items have high confidence scores
+                        </p>
+                        <button 
+                            className="btn btn-primary" 
+                            onClick={onComplete}
+                            style={{marginTop: '20px'}}
+                        >
+                            Continue to Next Step
+                        </button>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="review-interface">
+                    {/* Progress Bar */}
+                    <div style={{marginBottom: '30px'}}>
+                        <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
+                            <span>Review Progress</span>
+                            <span>{currentItemIndex + 1} of {reviewItems.length}</span>
+                        </div>
+                        <div className="progress-bar">
+                            <div 
+                                className="progress-bar-fill" 
+                                style={{width: `${((currentItemIndex + 1) / reviewItems.length) * 100}%`}}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Reviewer Input */}
+                    <div className="form-group" style={{marginBottom: '30px'}}>
+                        <label className="form-label">Reviewer Name</label>
+                        <input
+                            type="text"
+                            className="form-control"
+                            value={reviewer}
+                            onChange={(e) => setReviewer(e.target.value)}
+                            placeholder="Enter your name"
+                        />
+                    </div>
+
+                    {/* Current Review Item */}
+                    {currentItem && (
+                        <div className="review-item-card">
+                            <div className="card-header">
+                                <h3>Review: {currentItem.type.replace(/_/g, ' ').toUpperCase()}</h3>
+                                <ConfidenceIndicator confidence={currentItem.confidence} />
+                            </div>
+
+                            {/* Display current value */}
+                            <div style={{marginBottom: '25px'}}>
+                                <h4 style={{marginBottom: '15px'}}>Current Extraction:</h4>
+                                <div className="json-viewer" style={{maxHeight: '200px'}}>
+                                    <pre>{JSON.stringify(currentItem.value, null, 2)}</pre>
+                                </div>
+                            </div>
+
+                            {/* Questions */}
+                            {currentItem.questions && (
+                                <div style={{marginBottom: '25px'}}>
+                                    <h4 style={{marginBottom: '15px'}}>Please Verify:</h4>
+                                    {currentItem.questions.map((question, idx) => (
+                                        <div key={idx} style={{
+                                            padding: '15px',
+                                            background: 'rgba(0,0,0,0.2)',
+                                            borderRadius: '8px',
+                                            marginBottom: '10px'
+                                        }}>
+                                            ❓ {question}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Attribute Fields */}
+                            {currentItem.attributes_needed && (
+                                <div style={{marginBottom: '25px'}}>
+                                    <h4 style={{marginBottom: '15px'}}>Required Information:</h4>
+                                    {Object.entries(currentItem.attributes_needed).map(([attr, config]) => (
+                                        <div key={attr} className="form-group">
+                                            <label className="form-label">{config.question}</label>
+                                            {config.hint && (
+                                                <div style={{
+                                                    fontSize: '0.9em',
+                                                    color: '#8b5cf6',
+                                                    marginBottom: '10px'
+                                                }}>
+                                                    💡 Suggestion: {config.hint}
+                                                </div>
+                                            )}
+                                            {config.options ? (
+                                                <select
+                                                    className="form-control"
+                                                    value={reviewData[currentItem.id]?.[attr] || ''}
+                                                    onChange={(e) => setReviewData({
+                                                        ...reviewData,
+                                                        [currentItem.id]: {
+                                                            ...reviewData[currentItem.id],
+                                                            [attr]: e.target.value
+                                                        }
+                                                    })}
+                                                >
+                                                    <option value="">Select {attr}...</option>
+                                                    {config.options.map(opt => (
+                                                        <option key={opt} value={opt}>{opt}</option>
+                                                    ))}
+                                                </select>
+                                            ) : (
+                                                <input
+                                                    type="text"
+                                                    className="form-control"
+                                                    value={reviewData[currentItem.id]?.[attr] || ''}
+                                                    onChange={(e) => setReviewData({
+                                                        ...reviewData,
+                                                        [currentItem.id]: {
+                                                            ...reviewData[currentItem.id],
+                                                            [attr]: e.target.value
+                                                        }
+                                                    })}
+                                                />
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Comments */}
+                            <div className="form-group" style={{marginBottom: '25px'}}>
+                                <label className="form-label">Additional Comments (Optional)</label>
+                                <textarea
+                                    className="form-control"
+                                    rows={3}
+                                    value={reviewData[currentItem.id]?.comments || ''}
+                                    onChange={(e) => setReviewData({
+                                        ...reviewData,
+                                        [currentItem.id]: {
+                                            ...reviewData[currentItem.id],
+                                            comments: e.target.value
+                                        }
+                                    })}
+                                    placeholder="Any additional context or corrections..."
+                                />
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div style={{display: 'flex', gap: '15px', justifyContent: 'flex-end'}}>
+                                <button 
+                                    className="btn btn-secondary"
+                                    onClick={() => submitReview('skip')}
+                                >
+                                    Skip for Now
+                                </button>
+                                <button 
+                                    className="btn btn-danger"
+                                    onClick={() => submitReview('reject')}
+                                >
+                                    Incorrect - Needs Rework
+                                </button>
+                                <button 
+                                    className="btn btn-success"
+                                    onClick={() => submitReview('approve')}
+                                    disabled={
+                                        currentItem.attributes_needed && 
+                                        !Object.keys(currentItem.attributes_needed).every(
+                                            attr => reviewData[currentItem.id]?.[attr]
+                                        )
+                                    }
+                                >
+                                    Approve {currentItem.attributes_needed ? 'with Updates' : ''}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // Review Dashboard Component
+        const ReviewDashboard = () => {
+            const [summary, setSummary] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+
+            React.useEffect(() => {
+                loadSummary();
+                const interval = setInterval(loadSummary, 5000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const loadSummary = async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/review-summary`);
+                    const data = await response.json();
+                    setSummary(data);
+                    setLoading(false);
+                } catch (error) {
+                    console.error('Failed to load summary:', error);
+                    setLoading(false);
+                }
+            };
+
+            const exportReport = async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/export/review-report`);
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'review_report.json';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                } catch (error) {
+                    console.error('Export failed:', error);
+                }
+            };
+
+            if (loading || !summary) return <div className="loading-spinner"></div>;
+
+            return (
+                <div>
+                    <div className="card">
+                        <div className="card-header">
+                            <h2>Review Dashboard</h2>
+                            <button className="btn btn-secondary" onClick={exportReport}>
+                                📥 Export Report
+                            </button>
+                        </div>
+
+                        {/* Statistics Grid */}
+                        <div className="review-stats-grid">
+                            <div className="review-stat-card">
+                                <div className="review-stat-value" style={{color: '#3b82f6'}}>
+                                    {summary.total_items}
+                                </div>
+                                <div className="review-stat-label">Total Items</div>
+                            </div>
+                            <div className="review-stat-card">
+                                <div className="review-stat-value" style={{color: '#10b981'}}>
+                                    {summary.reviewed}
+                                </div>
+                                <div className="review-stat-label">Reviewed</div>
+                            </div>
+                            <div className="review-stat-card">
+                                <div className="review-stat-value" style={{color: '#f59e0b'}}>
+                                    {summary.pending}
+                                </div>
+                                <div className="review-stat-label">Pending</div>
+                            </div>
+                            <div className="review-stat-card">
+                                <div className="review-stat-value" style={{color: '#8b5cf6'}}>
+                                    {summary.quality_metrics?.approval_rate 
+                                        ? `${(summary.quality_metrics.approval_rate * 100).toFixed(0)}%`
+                                        : 'N/A'}
+                                </div>
+                                <div className="review-stat-label">Approval Rate</div>
+                            </div>
+                        </div>
+
+                        {/* Progress by Step */}
+                        <div style={{marginBottom: '30px'}}>
+                            <h3>Progress by Step</h3>
+                            {Object.entries(summary.by_step || {}).map(([step, data]) => (
+                                <div key={step} style={{marginBottom: '15px'}}>
+                                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '5px'}}>
+                                        <span>Step {step}</span>
+                                        <span>{data.reviewed}/{data.total}</span>
+                                    </div>
+                                    <div className="progress-bar">
+                                        <div 
+                                            className="progress-bar-fill" 
+                                            style={{
+                                                width: `${data.total > 0 ? (data.reviewed / data.total) * 100 : 0}%`,
+                                                background: data.reviewed === data.total ? '#10b981' : '#8b5cf6'
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* Recent Reviews */}
+                        {summary.recent_reviews && summary.recent_reviews.length > 0 && (
+                            <div>
+                                <h3>Recent Reviews</h3>
+                                <div style={{maxHeight: '300px', overflow: 'auto'}}>
+                                    {summary.recent_reviews.map((review, idx) => (
+                                        <div key={idx} style={{
+                                            padding: '15px',
+                                            background: 'rgba(0,0,0,0.2)',
+                                            borderRadius: '8px',
+                                            marginBottom: '10px'
+                                        }}>
+                                            <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                                                <span>
+                                                    <strong>{review.reviewer}</strong> reviewed Step {review.step}
+                                                </span>
+                                                <span style={{color: '#9ca3af', fontSize: '0.9em'}}>
+                                                    {new Date(review.timestamp).toLocaleString()}
+                                                </span>
+                                            </div>
+                                            <div style={{marginTop: '5px', fontSize: '0.9em', color: '#9ca3af'}}>
+                                                Decision: <span className={`tag tag-${review.decision === 'approve' ? 'success' : 'warning'}`}>
+                                                    {review.decision}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // Main App Component (Enhanced)
         const ThreatModelingApp = () => {
             const [currentStep, setCurrentStep] = React.useState(0);
             const [pipelineState, setPipelineState] = React.useState({
@@ -604,7 +1106,8 @@
                     { id: 5, name: 'Analyze Attack Paths', status: 'pending', data: null }
                 ],
                 logs: [],
-                stepReview: null
+                stepReview: null,
+                reviewsNeeded: {}
             });
             const [loading, setLoading] = React.useState(false);
             const [activeTab, setActiveTab] = React.useState('overview');
@@ -613,6 +1116,7 @@
             const [autoRun, setAutoRun] = React.useState(false);
             const [viewMode, setViewMode] = React.useState('visual');
             const [notification, setNotification] = React.useState(null);
+            const [reviewMode, setReviewMode] = React.useState('summary');
             const [configuration, setConfiguration] = React.useState({
                 timeout: 5000,
                 llm_provider: 'scaleway',
@@ -632,6 +1136,41 @@
             
             const logEndRef = React.useRef(null);
             const logPollInterval = React.useRef(null);
+
+            // Socket.IO listeners
+            React.useEffect(() => {
+                socket.on('connected', (data) => {
+                    console.log('Connected to review system:', data);
+                });
+
+                socket.on('reviews_available', (data) => {
+                    setPipelineState(prev => ({
+                        ...prev,
+                        reviewsNeeded: {
+                            ...prev.reviewsNeeded,
+                            [data.step]: data.count
+                        }
+                    }));
+                    showNotification(`${data.count} items need review for Step ${data.step}`, 'info');
+                });
+
+                socket.on('review_update', (data) => {
+                    // Refresh status
+                    loadPipelineStatus();
+                });
+
+                socket.on('batch_review_complete', (data) => {
+                    showNotification(`${data.count} items ${data.decision}ed by ${data.reviewer}`, 'success');
+                    loadPipelineStatus();
+                });
+
+                return () => {
+                    socket.off('connected');
+                    socket.off('reviews_available');
+                    socket.off('review_update');
+                    socket.off('batch_review_complete');
+                };
+            }, []);
 
             // Load configuration on mount
             React.useEffect(() => {
@@ -704,7 +1243,11 @@
                                     newSteps[stepNum - 1].data = { count: 1 }; // Placeholder
                                 }
                             });
-                            return { ...prev, steps: newSteps };
+                            return { 
+                                ...prev, 
+                                steps: newSteps,
+                                reviewsNeeded: data.pending_reviews || {}
+                            };
                         });
                     }
                 } catch (error) {
@@ -759,9 +1302,6 @@
                 const formData = new FormData();
                 formData.append('document', files[0]);
 
-                console.log('Uploading file:', files[0].name);
-                console.log('FormData entries:', Array.from(formData.entries()));
-
                 setLoading(true);
                 setCurrentOperation('Uploading and extracting text from document...');
                 updateStepStatus(0, 'running');
@@ -772,14 +1312,9 @@
                     const response = await fetch(`${API_BASE}/upload`, {
                         method: 'POST',
                         body: formData
-                        // Don't set Content-Type header - let the browser set it for FormData
                     });
                     
-                    console.log('Response status:', response.status);
-                    console.log('Response headers:', Array.from(response.headers.entries()));
-                    
                     const data = await response.json();
-                    console.log('Response data:', data);
                     
                     if (!response.ok) {
                         throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
@@ -811,102 +1346,112 @@
                 }
             };
 
-// Enhanced step running with progress tracking
-        const runStep = async (stepIndex, skipReview = false) => {
-            const step = pipelineState.steps[stepIndex];
-            setLoading(true);
-            updateStepStatus(stepIndex, 'running');
-            
-            const stepDescriptions = {
-                1: 'Extracting DFD components from document...',
-                2: 'Generating threats using STRIDE methodology...',
-                3: 'Refining threats and removing duplicates...',
-                4: 'Analyzing attack paths and scenarios...'
-            };
-            
-            setCurrentOperation(stepDescriptions[stepIndex] || `Running ${step.name}...`);
-            addLog(`Starting: ${step.name}`, 'info');
+            // Enhanced step running with progress tracking
+            const runStep = async (stepIndex, skipReview = false) => {
+                const step = pipelineState.steps[stepIndex];
+                setLoading(true);
+                updateStepStatus(stepIndex, 'running');
+                
+                const stepDescriptions = {
+                    1: 'Extracting DFD components from document...',
+                    2: 'Generating threats using STRIDE methodology...',
+                    3: 'Refining threats and removing duplicates...',
+                    4: 'Analyzing attack paths and scenarios...'
+                };
+                
+                setCurrentOperation(stepDescriptions[stepIndex] || `Running ${step.name}...`);
+                addLog(`Starting: ${step.name}`, 'info');
 
-            // Start progress polling for longer-running steps
-            let progressInterval = null;
-            if (stepIndex >= 2) { // Steps that might take longer
-                progressInterval = setInterval(async () => {
-                    try {
-                        const response = await fetch(`${API_BASE}/step-progress/${step.id}`);
-                        if (response.ok) {
-                            const progressData = await response.json();
-                            if (progressData.progress !== undefined) {
-                                setCurrentOperation(
-                                    `${stepDescriptions[stepIndex]} (${progressData.progress}%) - ${progressData.details || progressData.message}`
-                                );
+                // Start progress polling for longer-running steps
+                let progressInterval = null;
+                if (stepIndex >= 2) {
+                    progressInterval = setInterval(async () => {
+                        try {
+                            const response = await fetch(`${API_BASE}/step-progress/${step.id}`);
+                            if (response.ok) {
+                                const progressData = await response.json();
+                                if (progressData.progress !== undefined) {
+                                    setCurrentOperation(
+                                        `${stepDescriptions[stepIndex]} (${progressData.progress}%) - ${progressData.details || progressData.message}`
+                                    );
+                                }
                             }
+                        } catch (error) {
+                            // Ignore progress errors
                         }
-                    } catch (error) {
-                        // Ignore progress errors
-                    }
-                }, 2000); // Check every 2 seconds
-            }
+                    }, 2000);
+                }
 
-            try {
-                const startTime = Date.now();
-                
-                const response = await fetch(`${API_BASE}/run-step`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        step: step.id,
-                        input: stepIndex > 0 ? pipelineState.steps[stepIndex - 1]?.data : {}
-                    })
-                });
-                
-                const data = await response.json();
-                
-                if (!response.ok) {
-                    throw new Error(data.error || 'Step failed');
-                }
-                
-                const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-                addLog(`${step.name} completed in ${duration}s - found ${data.count || 0} items`, 'success');
-                
-                setLoading(false);
-                setCurrentOperation('');
-                
-                if (progressInterval) {
-                    clearInterval(progressInterval);
-                }
-                
-                if (skipReview || autoRun) {
-                    updateStepStatus(stepIndex, 'completed', data);
+                try {
+                    const startTime = Date.now();
                     
-                    if (autoRun && stepIndex < pipelineState.steps.length - 1) {
-                        setTimeout(() => runStep(stepIndex + 1, true), 1000);
+                    const response = await fetch(`${API_BASE}/run-step`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            step: step.id,
+                            input: stepIndex > 0 ? pipelineState.steps[stepIndex - 1]?.data : {}
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Step failed');
                     }
-                } else {
-                    setPipelineState(prev => ({
-                        ...prev,
-                        stepReview: {
-                            stepIndex: stepIndex,
-                            data: data,
-                            nextStep: stepIndex < pipelineState.steps.length - 1 ? stepIndex + 1 : null
+                    
+                    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+                    addLog(`${step.name} completed in ${duration}s - found ${data.count || 0} items`, 'success');
+                    
+                    if (data.review_needed && data.review_needed > 0) {
+                        setPipelineState(prev => ({
+                            ...prev,
+                            reviewsNeeded: {
+                                ...prev.reviewsNeeded,
+                                [stepIndex]: data.review_needed
+                            }
+                        }));
+                    }
+                    
+                    setLoading(false);
+                    setCurrentOperation('');
+                    
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                    }
+                    
+                    if (skipReview || autoRun) {
+                        updateStepStatus(stepIndex, 'completed', data);
+                        
+                        if (autoRun && stepIndex < pipelineState.steps.length - 1) {
+                            setTimeout(() => runStep(stepIndex + 1, true), 1000);
                         }
-                    }));
+                    } else {
+                        setPipelineState(prev => ({
+                            ...prev,
+                            stepReview: {
+                                stepIndex: stepIndex,
+                                data: data,
+                                nextStep: stepIndex < pipelineState.steps.length - 1 ? stepIndex + 1 : null
+                            }
+                        }));
+                    }
+                    
+                } catch (error) {
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                    }
+                    
+                    updateStepStatus(stepIndex, 'error');
+                    addLog(`${step.name} failed: ${error.message}`, 'error');
+                    setLoading(false);
+                    setCurrentOperation('');
+                    setAutoRun(false);
+                    showNotification(`Step failed: ${error.message}`, 'error');
                 }
-                
-            } catch (error) {
-                if (progressInterval) {
-                    clearInterval(progressInterval);
-                }
-                
-                updateStepStatus(stepIndex, 'error');
-                addLog(`${step.name} failed: ${error.message}`, 'error');
-                setLoading(false);
-                setCurrentOperation('');
-                setAutoRun(false);
-                showNotification(`Step failed: ${error.message}`, 'error');
-            }
-        };
+            };
 
             // Accept reviewed data and continue
             const acceptReviewedData = (data, continueToNext = true) => {
@@ -932,7 +1477,6 @@
                     return { ...prev, steps: newSteps };
                 });
             };
-            
 
             // Add log entry
             const addLog = (message, type = 'info') => {
@@ -995,7 +1539,7 @@
                             
                             // Update each step based on the files_loaded data
                             Object.entries(data.files_loaded || {}).forEach(([stepNum, fileInfo]) => {
-                                const stepIndex = parseInt(stepNum) - 1; // Convert to 0-indexed
+                                const stepIndex = parseInt(stepNum) - 1;
                                 if (stepIndex >= 0 && stepIndex < newSteps.length && fileInfo.status === 'loaded') {
                                     newSteps[stepIndex] = {
                                         ...newSteps[stepIndex],
@@ -1008,6 +1552,10 @@
                                         }
                                     };
                                     addLog(`✅ Step ${stepNum} (${fileInfo.description}) loaded from ${fileInfo.file}`, 'success');
+                                    
+                                    if (fileInfo.review_items > 0) {
+                                        prev.reviewsNeeded[parseInt(stepNum)] = fileInfo.review_items;
+                                    }
                                 } else if (fileInfo.status === 'simulated') {
                                     newSteps[stepIndex] = {
                                         ...newSteps[stepIndex],
@@ -1035,9 +1583,9 @@
                         
                         showNotification('Debug files loaded successfully', 'success');
                         
-                        // Set current step to the highest completed step + 1, or step 4 if all are loaded
+                        // Set current step to the highest completed step + 1
                         const completedSteps = data.completed_steps || [];
-                        const nextStep = Math.min(completedSteps.length, 4); // Cap at step 4 (0-indexed = 3)
+                        const nextStep = Math.min(completedSteps.length, 4);
                         setCurrentStep(nextStep);
                         
                         addLog(`🎯 Set current step to ${nextStep + 1}`, 'info');
@@ -1086,15 +1634,15 @@
                         {/* Configuration Status */}
                         <div style={{padding: '20px', borderBottom: '1px solid #2d3548'}}>
                             <div className="config-status">
-                                <div className="config-status-item">
+                                <div className="config-status-item" style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     <span className={`status-indicator ${configStatus.llm ? 'connected' : 'disconnected'}`}></span>
                                     <span>LLM</span>
                                 </div>
-                                <div className="config-status-item">
+                                <div className="config-status-item" style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     <span className={`status-indicator ${configStatus.qdrant ? 'connected' : 'disconnected'}`}></span>
                                     <span>Backend</span>
                                 </div>
-                                <div className="config-status-item">
+                                <div className="config-status-item" style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
                                     <span className={`status-indicator ${configStatus.mitre ? 'connected' : 'disconnected'}`}></span>
                                     <span>MITRE</span>
                                 </div>
@@ -1108,6 +1656,7 @@
                                 step={step}
                                 index={index}
                                 active={currentStep === index}
+                                hasReview={pipelineState.reviewsNeeded[index + 1] > 0}
                                 onClick={() => setCurrentStep(index)}
                             />
                         ))}
@@ -1171,6 +1720,17 @@
                                     ✏️ Edit Data
                                 </button>
                                 <button 
+                                    className={`tab ${activeTab === 'review' ? 'active' : ''}`}
+                                    onClick={() => setActiveTab('review')}
+                                >
+                                    👥 Review
+                                    {Object.values(pipelineState.reviewsNeeded).reduce((a, b) => a + b, 0) > 0 && (
+                                        <span className="tag tag-warning" style={{marginLeft: '8px', padding: '2px 8px', fontSize: '0.8em'}}>
+                                            {Object.values(pipelineState.reviewsNeeded).reduce((a, b) => a + b, 0)}
+                                        </span>
+                                    )}
+                                </button>
+                                <button 
                                     className={`tab ${activeTab === 'visualize' ? 'active' : ''}`}
                                     onClick={() => setActiveTab('visualize')}
                                 >
@@ -1188,12 +1748,7 @@
                                 </button>
                                 <button 
                                     className="btn btn-secondary btn-sm"
-                                    onClick={async () => {
-                                        const response = await fetch(`${API_BASE}/debug-state`);
-                                        const data = await response.json();
-                                        console.log('Pipeline State:', data);
-                                        addLog(`Pipeline state: ${JSON.stringify(data.completed_steps)}`, 'info');
-                                    }}
+                                    onClick={debugShowState}
                                     title="Check pipeline state"
                                 >
                                     🔍 State
@@ -1221,6 +1776,9 @@
                                         setCurrentStep(stepIndex);
                                         setActiveTab('edit');
                                     }}
+                                    reviewMode={reviewMode}
+                                    setReviewMode={setReviewMode}
+                                    needsExpertReview={pipelineState.reviewsNeeded[pipelineState.stepReview.stepIndex] > 0}
                                 />
                             )}
                             
@@ -1250,6 +1808,10 @@
                                             step={pipelineState.steps[currentStep]}
                                             viewMode={viewMode}
                                         />
+                                    )}
+                                    
+                                    {activeTab === 'review' && (
+                                        <ReviewDashboard />
                                     )}
                                     
                                     {activeTab === 'visualize' && (
@@ -1380,9 +1942,9 @@
                         </div>
 
                         {/* LLM Configuration */}
-                        <div className="config-panel">
+                        <div className="config-panel" style={{background: '#0a0e1a', border: '2px solid #2d3548', borderRadius: '12px', padding: '25px', marginBottom: '25px'}}>
                             <h3 style={{marginBottom: '20px'}}>🤖 Language Model Settings</h3>
-                            <div className="config-grid">
+                            <div className="config-grid" style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginTop: '20px'}}>
                                 <div className="form-group">
                                     <label className="form-label">LLM Provider</label>
                                     <select 
@@ -1438,12 +2000,12 @@
         };
 
         // Enhanced Pipeline Step Component
-        const PipelineStep = ({ step, index, active, onClick }) => {
+        const PipelineStep = ({ step, index, active, hasReview, onClick }) => {
             const icons = ['📄', '🔗', '⚠️', '✨', '🎯'];
             
             return (
                 <div 
-                    className={`pipeline-step ${active ? 'active' : ''} ${step.status}`}
+                    className={`pipeline-step ${active ? 'active' : ''} ${step.status} ${hasReview ? 'has-review' : ''}`}
                     onClick={onClick}
                 >
                     <div className="step-title">
@@ -1458,6 +2020,7 @@
                         {step.status === 'error' && 'Failed - Click to retry'}
                         {step.status === 'pending' && 'Ready to run'}
                         {step.status === 'running' && 'Processing...'}
+                        {hasReview && ' - Review needed'}
                     </div>
                     {step.status === 'running' && (
                         <div style={{marginTop: '8px'}}>
@@ -1563,14 +2126,10 @@
                     alert('Please enter some text');
                     return;
                 }
-
-                console.log('Submitting text content, length:', textContent.length);
                 
                 setIsProcessing(true);
                 const blob = new Blob([textContent], { type: 'text/plain' });
                 const file = new File([blob], 'manual_input.txt', { type: 'text/plain' });
-                
-                console.log('Created file:', file.name, 'size:', file.size, 'type:', file.type);
                 
                 await onUpload([file]);
                 setIsProcessing(false);
@@ -1643,7 +2202,7 @@ Data Flows:
                                 textAlign: 'center',
                                 transition: 'all 0.3s ease',
                                 cursor: 'pointer',
-                                background: 'rgba(139, 92, 246, 0.02)'
+                                background: dragging ? 'rgba(139, 92, 246, 0.1)' : 'rgba(139, 92, 246, 0.02)'
                             }}
                         >
                             <input 
@@ -1726,8 +2285,8 @@ Data Flows:
             );
         };
 
-        // Step Review Screen Component
-        const StepReviewScreen = ({ stepReview, stepName, onAccept, onEdit }) => {
+        // Enhanced Step Review Screen Component
+        const StepReviewScreen = ({ stepReview, stepName, onAccept, onEdit, reviewMode, setReviewMode, needsExpertReview }) => {
             const [reviewData, setReviewData] = React.useState(stepReview.data);
 
             const renderSummary = () => {
@@ -1892,37 +2451,65 @@ Data Flows:
                         <span className="tag tag-warning">Pending Review</span>
                     </div>
                     
-                    {renderSummary()}
-                    
-                    <div className="card" style={{marginTop: '20px', background: '#0a0e1a'}}>
-                        <div className="card-header">
-                            <h3>🔍 Raw Data Preview</h3>
+                    {needsExpertReview && (
+                        <div style={{marginBottom: '20px', padding: '15px', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '8px'}}>
+                            <div style={{display: 'flex', alignItems: 'center', gap: '15px'}}>
+                                <span className="tag tag-warning">{needsExpertReview} Items Need Review</span>
+                                <span>Some extracted items have low confidence and need expert validation</span>
+                                <button 
+                                    className="btn btn-warning btn-sm"
+                                    onClick={() => setReviewMode(reviewMode === 'summary' ? 'expert' : 'summary')}
+                                >
+                                    {reviewMode === 'summary' ? 'Start Expert Review' : 'Back to Summary'}
+                                </button>
+                            </div>
                         </div>
-                        <div className="json-viewer" style={{maxHeight: '400px'}}>
-                            <pre dangerouslySetInnerHTML={{__html: highlightJSON(reviewData)}} />
-                        </div>
-                    </div>
+                    )}
                     
-                    <div style={{display: 'flex', gap: '15px', marginTop: '30px', flexWrap: 'wrap'}}>
-                        <button 
-                            className="btn btn-success"
-                            onClick={() => onAccept(reviewData, false)}
-                        >
-                            ✓ Accept & View Next Step
-                        </button>
-                        <button 
-                            className="btn btn-primary"
-                            onClick={() => onAccept(reviewData, true)}
-                        >
-                            ⚡ Accept & Run Next Step
-                        </button>
-                        <button 
-                            className="btn btn-warning"
-                            onClick={onEdit}
-                        >
-                            🛠️ Advanced Editor
-                        </button>
-                    </div>
+                    {reviewMode === 'expert' ? (
+                        <ReviewInterface 
+                            stepReview={stepReview}
+                            onComplete={() => {
+                                setReviewMode('summary');
+                                // Refresh to check if more reviews needed
+                                window.location.reload();
+                            }}
+                        />
+                    ) : (
+                        <>
+                            {renderSummary()}
+                            
+                            <div className="card" style={{marginTop: '20px', background: '#0a0e1a'}}>
+                                <div className="card-header">
+                                    <h3>🔍 Raw Data Preview</h3>
+                                </div>
+                                <div className="json-viewer" style={{maxHeight: '400px'}}>
+                                    <pre dangerouslySetInnerHTML={{__html: highlightJSON(reviewData)}} />
+                                </div>
+                            </div>
+                            
+                            <div style={{display: 'flex', gap: '15px', marginTop: '30px', flexWrap: 'wrap'}}>
+                                <button 
+                                    className="btn btn-success"
+                                    onClick={() => onAccept(reviewData, false)}
+                                >
+                                    ✓ Accept & View Next Step
+                                </button>
+                                <button 
+                                    className="btn btn-primary"
+                                    onClick={() => onAccept(reviewData, true)}
+                                >
+                                    ⚡ Accept & Run Next Step
+                                </button>
+                                <button 
+                                    className="btn btn-warning"
+                                    onClick={onEdit}
+                                >
+                                    🛠️ Advanced Editor
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </div>
             );
         };

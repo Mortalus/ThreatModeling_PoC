@@ -42,7 +42,7 @@ def get_config():
         'cisa_kev_url': os.getenv('CISA_KEV_URL', 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'),
         
         # Processing parameters
-        'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD', '0.80')),
+        'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD', '0.70')),
         'cve_relevance_years': int(os.getenv('CVE_RELEVANCE_YEARS', '5')),
         'client_industry': os.getenv('CLIENT_INDUSTRY', 'Generic'),
         
