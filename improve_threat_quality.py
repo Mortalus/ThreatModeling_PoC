@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-# threat_refiner.py
-
 """
-Standalone script to refine and enrich threat model data by:
-- Deduplicating similar threats using semantic clustering
+Simplified and Compatible Threat Quality Improvement Script
+
+This script refines and enriches threat model data by:
+- Deduplicating similar threats using basic text similarity
 - Standardizing component names against DFD data
-- Suppressing irrelevant threats based on controls and CVE analysis
+- Suppressing irrelevant threats based on controls
 - Enriching threats with business risk context and prioritization
+
+Simplified to work without heavy ML dependencies.
 """
 
 import os
@@ -17,60 +19,101 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Tuple, Any
 from dataclasses import dataclass, asdict
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import sys
-
-# Third-party imports
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError
+import re
 import logging
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.cluster import DBSCAN
-import pandas as pd
-from cachetools import TTLCache
-import backoff
 
 # Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
+
+def get_config():
+    """Get configuration from environment with defaults."""
+    return {
+        'input_dir': os.getenv('INPUT_DIR', './output'),
+        'dfd_input_path': os.getenv('DFD_INPUT_PATH', ''),
+        'threats_input_path': os.getenv('THREATS_INPUT_PATH', ''),
+        'refined_threats_output_path': os.getenv('REFINED_THREATS_OUTPUT_PATH', ''),
+        'controls_input_path': os.getenv('CONTROLS_INPUT_PATH', ''),
+        
+        # External APIs
+        'nvd_api_url': os.getenv('NVD_API_URL', 'https://services.nvd.nist.gov/rest/json/cves/2.0'),
+        'cisa_kev_url': os.getenv('CISA_KEV_URL', 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'),
+        
+        # Processing parameters
+        'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD', '0.80')),
+        'cve_relevance_years': int(os.getenv('CVE_RELEVANCE_YEARS', '5')),
+        'client_industry': os.getenv('CLIENT_INDUSTRY', 'Generic'),
+        
+        # Performance settings
+        'api_timeout': int(os.getenv('API_TIMEOUT', '30')),
+        
+        # Logging
+        'log_level': os.getenv('LOG_LEVEL', 'INFO'),
+        
+        # Output directory for progress files
+        'output_dir': os.getenv('OUTPUT_DIR', './output')
+    }
+
+# Get configuration
+config = get_config()
 
 # Configure logging
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=getattr(logging, config['log_level']),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
+
+# --- Progress Tracking Functions ---
+def write_progress(step: int, current: int, total: int, message: str, details: str = ""):
+    """Write progress information to a file that the frontend can read."""
+    try:
+        progress_data = {
+            'step': step,
+            'current': current,
+            'total': total,
+            'progress': round((current / total * 100) if total > 0 else 0, 1),
+            'message': message,
+            'details': details,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        progress_file = os.path.join(config['output_dir'], f'step_{step}_progress.json')
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f, indent=2)
+            
+    except Exception as e:
+        logger.warning(f"Could not write progress: {e}")
+
+def check_kill_signal(step: int) -> bool:
+    """Check if user requested to kill this step."""
+    try:
+        kill_file = os.path.join(config['output_dir'], f'step_{step}_kill.flag')
+        if os.path.exists(kill_file):
+            logger.info("Kill signal detected, stopping execution")
+            return True
+        return False
+    except:
+        return False
 
 @dataclass
 class Config:
     """Configuration class for threat refinement pipeline."""
-    input_dir: str = os.getenv("INPUT_DIR", "./output")
-    dfd_input_path: str = os.getenv("DFD_INPUT_PATH", "")
-    threats_input_path: str = os.getenv("THREATS_INPUT_PATH", "")
-    refined_threats_output_path: str = os.getenv("REFINED_THREATS_OUTPUT_PATH", "")
-    controls_input_path: str = os.getenv("CONTROLS_INPUT_PATH", "")
-    
-    # External APIs
-    nvd_api_url: str = os.getenv("NVD_API_URL", "https://services.nvd.nist.gov/rest/json/cves/2.0")
-    cisa_kev_url: str = os.getenv("CISA_KEV_URL", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")
-    
-    # Processing parameters
-    similarity_threshold: float = float(os.getenv("SIMILARITY_THRESHOLD", "0.80"))
-    cve_relevance_years: int = int(os.getenv("CVE_RELEVANCE_YEARS", "5"))
-    client_industry: str = os.getenv("CLIENT_INDUSTRY", "Generic")
-    
-    # Model configuration
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "all-mpnet-base-v2")
-    clustering_eps: float = float(os.getenv("CLUSTERING_EPS", "0.20"))
-    clustering_min_samples: int = int(os.getenv("CLUSTERING_MIN_SAMPLES", "1"))
-    
-    # Performance settings
-    max_workers: int = int(os.getenv("MAX_WORKERS", "4"))
-    api_timeout: int = int(os.getenv("API_TIMEOUT", "30"))
-    cache_ttl: int = int(os.getenv("CACHE_TTL", "3600"))  # 1 hour
-    
-    # Logging
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    input_dir: str = config['input_dir']
+    dfd_input_path: str = config['dfd_input_path']
+    threats_input_path: str = config['threats_input_path']
+    refined_threats_output_path: str = config['refined_threats_output_path']
+    controls_input_path: str = config['controls_input_path']
+    nvd_api_url: str = config['nvd_api_url']
+    cisa_kev_url: str = config['cisa_kev_url']
+    similarity_threshold: float = config['similarity_threshold']
+    cve_relevance_years: int = config['cve_relevance_years']
+    client_industry: str = config['client_industry']
+    api_timeout: int = config['api_timeout']
+    log_level: str = config['log_level']
+    output_dir: str = config['output_dir']
     
     def __post_init__(self):
         """Set default paths based on input_dir if not provided."""
@@ -82,26 +125,6 @@ class Config:
             self.refined_threats_output_path = os.path.join(self.input_dir, "refined_threats.json")
         if not self.controls_input_path:
             self.controls_input_path = os.path.join(self.input_dir, "controls.json")
-
-# --- Pydantic Models ---
-class Threat(BaseModel):
-    component_name: str = Field(..., description="Standardized name of the component or data flow")
-    stride_category: str = Field(..., pattern="^[STRIDE]$", description="STRIDE category (S, T, R, I, D, E)")
-    threat_description: str = Field(..., description="Detailed description of the threat")
-    mitigation_suggestion: str = Field(..., description="Actionable mitigation specific to the threat")
-    impact: str = Field(..., pattern="^(Critical|High|Medium|Low)$", description="Impact level")
-    likelihood: str = Field(..., pattern="^(Low|Medium|High)$", description="Likelihood level")
-    references: List[str] = Field(default_factory=list, description="List of references (e.g., CWE, CVE, OWASP)")
-    risk_score: str = Field(..., pattern="^(Critical|High|Medium|Low)$", description="Derived risk score")
-    residual_risk_score: str = Field(..., pattern="^(Critical|High|Medium|Low)$", description="Risk score post-mitigation")
-    exploitability: str = Field(..., pattern="^(Low|Medium|High)$", description="Ease of exploitation")
-    mitigation_maturity: str = Field(..., pattern="^(Immature|Mature|Advanced)$", description="Maturity of mitigation controls")
-    justification: str = Field(..., description="Rationale for impact and likelihood ratings")
-    risk_statement: str = Field(..., description="Business-contextualized risk description")
-
-class RefinedThreatsOutput(BaseModel):
-    threats: List[Threat]
-    metadata: Dict[str, Any]
 
 @dataclass
 class ThreatStats:
@@ -116,35 +139,31 @@ class ThreatStats:
     low_count: int = 0
 
 class ExternalDataManager:
-    """Manages external API calls and caching."""
+    """Manages external API calls with simplified error handling."""
     
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.cache = TTLCache(maxsize=1000, ttl=config.cache_ttl)
     
-    @backoff.on_exception(backoff.expo, aiohttp.ClientError, max_tries=3)
     async def fetch_cisa_kev_catalog(self) -> Set[str]:
-        """Fetch CISA KEV catalog with async/retry."""
-        cache_key = "cisa_kev"
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-        
+        """Fetch CISA KEV catalog with basic async handling."""
         try:
             self.logger.info("Fetching CISA KEV catalog...")
+            write_progress(4, 5, 100, "Fetching external data", "Downloading CISA KEV catalog")
+            
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.config.api_timeout)) as session:
                 async with session.get(self.config.cisa_kev_url) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                    
-            kev_set = {vuln['cveID'] for vuln in data.get('vulnerabilities', [])}
-            self.cache[cache_key] = kev_set
-            
-            self.logger.info(f"Successfully loaded {len(kev_set)} entries from CISA KEV catalog")
-            return kev_set
-            
+                    if response.status == 200:
+                        data = await response.json()
+                        kev_set = {vuln['cveID'] for vuln in data.get('vulnerabilities', [])}
+                        self.logger.info(f"Successfully loaded {len(kev_set)} entries from CISA KEV catalog")
+                        write_progress(4, 10, 100, "External data loaded", f"Found {len(kev_set)} known exploited vulnerabilities")
+                        return kev_set
+                    else:
+                        self.logger.warning(f"Failed to fetch CISA KEV catalog: HTTP {response.status}")
+                        return set()
         except Exception as e:
-            self.logger.error(f"Failed to fetch CISA KEV catalog: {e}")
+            self.logger.warning(f"Failed to fetch CISA KEV catalog: {e}")
             return set()
     
     def check_cve_relevance(self, cve_id: str, kev_catalog: Set[str]) -> bool:
@@ -192,6 +211,8 @@ class DataLoader:
                 return default
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON in {file_path}: {e}")
+            if default is not None:
+                return default
             raise
         except Exception as e:
             self.logger.error(f"Failed to load {file_path}: {e}")
@@ -224,24 +245,74 @@ class DataLoader:
         }
         return self.load_json_file(self.config.controls_input_path, default_controls)
 
+class SimpleSimilarityMatcher:
+    """Simple text similarity matching without ML dependencies."""
+    
+    def __init__(self, threshold: float = 0.8):
+        self.threshold = threshold
+    
+    def calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate simple similarity between two texts."""
+        # Convert to lowercase and split into words
+        words1 = set(re.findall(r'\b\w+\b', text1.lower()))
+        words2 = set(re.findall(r'\b\w+\b', text2.lower()))
+        
+        # Calculate Jaccard similarity
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        if union == 0:
+            return 0.0
+        
+        return intersection / union
+    
+    def find_similar_threats(self, threats: List[Dict]) -> List[List[int]]:
+        """Find groups of similar threats."""
+        n = len(threats)
+        similar_groups = []
+        processed = set()
+        
+        for i in range(n):
+            if i in processed:
+                continue
+            
+            current_group = [i]
+            threat_text_i = f"{threats[i].get('threat_description', '')} {threats[i].get('mitigation_suggestion', '')}"
+            
+            for j in range(i + 1, n):
+                if j in processed:
+                    continue
+                
+                threat_text_j = f"{threats[j].get('threat_description', '')} {threats[j].get('mitigation_suggestion', '')}"
+                
+                # Check if they're for the same component and have similar text
+                if (threats[i].get('component_name') == threats[j].get('component_name') and
+                    threats[i].get('stride_category') == threats[j].get('stride_category') and
+                    self.calculate_similarity(threat_text_i, threat_text_j) >= self.threshold):
+                    
+                    current_group.append(j)
+                    processed.add(j)
+            
+            if len(current_group) > 1:
+                similar_groups.append(current_group)
+            
+            processed.add(i)
+        
+        return similar_groups
+
 class ThreatProcessor:
     """Core threat processing logic."""
     
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.embedding_model = None
+        self.similarity_matcher = SimpleSimilarityMatcher(config.similarity_threshold)
         self.stats = ThreatStats()
-    
-    def _load_embedding_model(self):
-        """Lazy load the embedding model."""
-        if self.embedding_model is None:
-            self.logger.info(f"Loading embedding model: {self.config.embedding_model}")
-            self.embedding_model = SentenceTransformer(self.config.embedding_model)
     
     def standardize_component_name(self, original_name: str, valid_flows: List[Dict]) -> str:
         """Standardize component names to match DFD format."""
-        valid_names = {f"{flow['source']} to {flow['destination']}" for flow in valid_flows if 'source' in flow and 'destination' in flow}
+        valid_names = {f"{flow['source']} to {flow['destination']}" for flow in valid_flows 
+                      if 'source' in flow and 'destination' in flow}
         
         # Clean and normalize the name
         normalized = original_name.replace("Data Flow from ", "").replace(" data flow", "").strip()
@@ -277,12 +348,13 @@ class ThreatProcessor:
             return "Low"
     
     def assess_exploitability(self, threat: Dict, dfd_data: Dict) -> str:
-        """Assess exploitability based on component exposure and security controls."""
+        """Assess exploitability based on component exposure."""
         component_name = threat["component_name"]
         flows = dfd_data.get("data_flows", [])
         
         # Find corresponding flow
-        flow = next((f for f in flows if f"{f.get('source', '')} to {f.get('destination', '')}" == component_name), None)
+        flow = next((f for f in flows 
+                    if f"{f.get('source', '')} to {f.get('destination', '')}" == component_name), None)
         
         if not flow:
             return "Medium"  # Default for unknown flows
@@ -390,8 +462,18 @@ class ThreatProcessor:
         """Suppress threats based on implemented controls and CVE relevance."""
         data_manager = ExternalDataManager(self.config)
         active_threats = []
+        total_threats = len(threats)
         
-        for threat in threats:
+        for i, threat in enumerate(threats):
+            if check_kill_signal(4):
+                return active_threats
+                
+            # Update progress
+            progress = 20 + int((i / total_threats) * 15)
+            write_progress(4, progress, 100, 
+                         f"Suppressing threats ({i+1}/{total_threats})", 
+                         f"Analyzing: {threat.get('component_name', 'Unknown')}")
+            
             suppress = False
             component = threat["component_name"]
             
@@ -438,79 +520,76 @@ class ThreatProcessor:
         return active_threats
     
     def deduplicate_threats(self, threats: List[Dict]) -> List[Dict]:
-        """Deduplicate threats using semantic similarity clustering."""
+        """Deduplicate threats using simple similarity matching."""
         if len(threats) <= 1:
             return threats
         
-        self._load_embedding_model()
-        self.logger.info(f"Deduplicating {len(threats)} threats using semantic clustering")
+        self.logger.info(f"Deduplicating {len(threats)} threats using simple similarity matching")
+        write_progress(4, 40, 100, "Deduplicating threats", f"Analyzing {len(threats)} threats for similarity")
         
-        # Create embeddings from combined description and mitigation
-        combined_texts = [
-            f"{threat.get('threat_description', '')} {threat.get('mitigation_suggestion', '')}"
-            for threat in threats
-        ]
+        # Find similar threat groups
+        similar_groups = self.similarity_matcher.find_similar_threats(threats)
         
-        embeddings = self.embedding_model.encode(combined_texts, convert_to_tensor=True).cpu().numpy()
-        
-        # Cluster using DBSCAN
-        clustering = DBSCAN(
-            eps=self.config.clustering_eps,
-            min_samples=self.config.clustering_min_samples,
-            metric="cosine"
-        ).fit(embeddings)
-        
-        # Group threats by cluster, component, and STRIDE category
-        cluster_groups = {}
-        for idx, label in enumerate(clustering.labels_):
-            threat = threats[idx]
-            key = (label, threat.get("component_name", ""), threat.get("stride_category", ""))
-            
-            if key not in cluster_groups:
-                cluster_groups[key] = []
-            cluster_groups[key].append(idx)
-        
-        # Merge similar threats within each cluster
+        # Create a set of indices that will be merged
+        indices_to_remove = set()
         deduplicated_threats = []
         merged_count = 0
         
-        for key, indices in cluster_groups.items():
-            if len(indices) == 1:
-                deduplicated_threats.append(threats[indices[0]])
-            else:
-                # Merge threats in this cluster
-                cluster_threats = [threats[i] for i in indices]
-                
-                # Select primary threat (most detailed description)
-                primary_threat = max(cluster_threats, key=lambda t: len(t.get('threat_description', '')))
-                
-                # Merge mitigations (take the most detailed one)
-                best_mitigation = max(cluster_threats, key=lambda t: len(t.get('mitigation_suggestion', '')))
-                primary_threat['mitigation_suggestion'] = best_mitigation.get('mitigation_suggestion', '')
-                
-                # Combine all unique references
-                all_refs = set()
-                for t in cluster_threats:
-                    all_refs.update(t.get("references", []))
-                primary_threat["references"] = sorted(list(all_refs))
-                
-                # Take the highest impact/likelihood from the cluster
-                impacts = [t.get("impact", "Low") for t in cluster_threats]
-                likelihoods = [t.get("likelihood", "Low") for t in cluster_threats]
-                
-                impact_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
-                likelihood_order = {"High": 3, "Medium": 2, "Low": 1}
-                
-                primary_threat["impact"] = max(impacts, key=lambda x: impact_order.get(x, 1))
-                primary_threat["likelihood"] = max(likelihoods, key=lambda x: likelihood_order.get(x, 1))
-                
-                deduplicated_threats.append(primary_threat)
-                merged_count += len(indices) - 1
-                
-                self.logger.debug(f"Merged {len(indices)} similar threats for component '{primary_threat.get('component_name', 'Unknown')}'")
+        # Process similar groups
+        for group_idx, group in enumerate(similar_groups):
+            # Update progress
+            progress = 40 + int((group_idx / len(similar_groups)) * 10) if similar_groups else 50
+            write_progress(4, progress, 100, 
+                         f"Processing similar group {group_idx+1}/{len(similar_groups)}", 
+                         f"Merging {len(group)} similar threats")
+            
+            # Select primary threat (most detailed description)
+            primary_idx = max(group, key=lambda i: len(threats[i].get('threat_description', '')))
+            primary_threat = threats[primary_idx].copy()
+            
+            # Merge data from other threats in the group
+            for idx in group:
+                if idx != primary_idx:
+                    other_threat = threats[idx]
+                    
+                    # Take the best mitigation (most detailed)
+                    if len(other_threat.get('mitigation_suggestion', '')) > len(primary_threat.get('mitigation_suggestion', '')):
+                        primary_threat['mitigation_suggestion'] = other_threat.get('mitigation_suggestion', '')
+                    
+                    # Combine all unique references
+                    primary_refs = set(primary_threat.get("references", []))
+                    other_refs = set(other_threat.get("references", []))
+                    primary_threat["references"] = sorted(list(primary_refs.union(other_refs)))
+                    
+                    # Take the highest impact/likelihood from the group
+                    impact_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+                    likelihood_order = {"High": 3, "Medium": 2, "Low": 1}
+                    
+                    current_impact = primary_threat.get("impact", "Low")
+                    other_impact = other_threat.get("impact", "Low")
+                    if impact_order.get(other_impact, 1) > impact_order.get(current_impact, 1):
+                        primary_threat["impact"] = other_impact
+                    
+                    current_likelihood = primary_threat.get("likelihood", "Low")
+                    other_likelihood = other_threat.get("likelihood", "Low")
+                    if likelihood_order.get(other_likelihood, 1) > likelihood_order.get(current_likelihood, 1):
+                        primary_threat["likelihood"] = other_likelihood
+                    
+                    indices_to_remove.add(idx)
+            
+            deduplicated_threats.append(primary_threat)
+            merged_count += len(group) - 1
+            
+            self.logger.debug(f"Merged {len(group)} similar threats for component '{primary_threat.get('component_name', 'Unknown')}'")
+        
+        # Add non-similar threats
+        for i, threat in enumerate(threats):
+            if i not in indices_to_remove and not any(i in group for group in similar_groups):
+                deduplicated_threats.append(threat)
         
         self.stats.deduplicated_count = merged_count
         self.logger.info(f"Deduplication merged {merged_count} threats, resulting in {len(deduplicated_threats)} unique threats")
+        write_progress(4, 50, 100, "Deduplication complete", f"Reduced to {len(deduplicated_threats)} unique threats")
         
         return deduplicated_threats
     
@@ -561,23 +640,38 @@ class ThreatRefiner:
         """Main refinement pipeline."""
         try:
             self.logger.info("=== Starting Threat Refinement Pipeline ===")
+            write_progress(4, 0, 100, "Starting threat refinement", "Initializing pipeline")
             
             # Ensure output directory exists
             Path(self.config.input_dir).mkdir(parents=True, exist_ok=True)
             
             # Load input data
             self.logger.info("Loading input data...")
+            write_progress(4, 2, 100, "Loading data", "Reading threat and DFD files")
+            
             threats = self.data_loader.load_threats()
             dfd_data = self.data_loader.load_dfd_components()
             controls = self.data_loader.load_controls()
             
             self.processor.stats.original_count = len(threats)
             self.logger.info(f"Loaded {len(threats)} initial threats")
+            write_progress(4, 5, 100, "Data loaded", f"Found {len(threats)} threats to refine")
             
-            # Fetch external data
-            kev_catalog = await self.external_data.fetch_cisa_kev_catalog()
+            # Fetch external data (with fallback)
+            try:
+                if check_kill_signal(4):
+                    return False
+                kev_catalog = await self.external_data.fetch_cisa_kev_catalog()
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch CISA KEV catalog, continuing without it: {e}")
+                kev_catalog = set()
+                write_progress(4, 10, 100, "External data skipped", "Continuing without KEV catalog")
             
             # Step 1: Standardize component names
+            if check_kill_signal(4):
+                return False
+            write_progress(4, 15, 100, "Standardizing names", "Matching components to DFD")
+            
             dfd_flows = dfd_data.get("data_flows", [])
             for threat in threats:
                 threat["component_name"] = self.processor.standardize_component_name(
@@ -585,18 +679,37 @@ class ThreatRefiner:
                 )
             
             # Step 2: Suppress irrelevant threats
+            if check_kill_signal(4):
+                return False
             self.logger.info("Suppressing irrelevant threats based on controls and CVE analysis...")
+            write_progress(4, 20, 100, "Suppressing threats", "Analyzing controls and CVEs")
             threats = self.processor.suppress_threats(threats, controls, dfd_data, kev_catalog)
             
             # Step 3: Deduplicate similar threats
+            if check_kill_signal(4):
+                return False
             self.logger.info("Deduplicating similar threats...")
             threats = self.processor.deduplicate_threats(threats)
             
             # Step 4: Enrich threats with business context
+            if check_kill_signal(4):
+                return False
             self.logger.info("Enriching threats with business risk context...")
-            enriched_threats = []
+            write_progress(4, 55, 100, "Enriching threats", "Adding business context")
             
-            for threat in threats:
+            enriched_threats = []
+            total_threats = len(threats)
+            
+            for i, threat in enumerate(threats):
+                if check_kill_signal(4):
+                    return False
+                    
+                # Update progress
+                progress = 55 + int((i / total_threats) * 35)
+                write_progress(4, progress, 100, 
+                             f"Enriching threat {i+1}/{total_threats}", 
+                             threat.get('component_name', 'Unknown'))
+                
                 # Find corresponding data flow
                 flow_details = next(
                     (f for f in dfd_flows if f"{f.get('source', '')} to {f.get('destination', '')}" == threat.get("component_name", "")),
@@ -610,6 +723,10 @@ class ThreatRefiner:
                 enriched_threats.append(enriched_threat)
             
             # Step 5: Sort by risk priority
+            if check_kill_signal(4):
+                return False
+            write_progress(4, 92, 100, "Sorting threats", "Prioritizing by risk score")
+            
             risk_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
             enriched_threats.sort(
                 key=lambda t: risk_order.get(t.get("risk_score", "Low"), 1),
@@ -629,16 +746,29 @@ class ThreatRefiner:
                 else:
                     self.processor.stats.low_count += 1
             
-            # Step 6: Generate and validate output
+            # Step 6: Generate and save output
+            if check_kill_signal(4):
+                return False
+            write_progress(4, 95, 100, "Saving results", "Writing refined threats")
             await self._save_outputs(enriched_threats, dfd_data)
             
             self.logger.info("=== Threat Refinement Pipeline Completed Successfully ===")
             self._log_statistics()
+            write_progress(4, 100, 100, "Complete", f"Refined {len(enriched_threats)} threats")
+            
+            # Clean up progress file after success
+            try:
+                progress_file = os.path.join(self.config.output_dir, 'step_4_progress.json')
+                if os.path.exists(progress_file):
+                    os.remove(progress_file)
+            except:
+                pass
             
             return True
             
         except Exception as e:
-            self.logger.error(f"Threat refinement failed: {e}", exc_info=True)
+            self.logger.error(f"Threat refinement failed: {e}")
+            write_progress(4, 100, 100, "Failed", str(e))
             return False
     
     async def _save_outputs(self, threats: List[Dict], dfd_data: Dict):
@@ -655,19 +785,10 @@ class ThreatRefiner:
                 "industry_context": self.config.client_industry,
                 "processing_config": {
                     "similarity_threshold": self.config.similarity_threshold,
-                    "cve_relevance_years": self.config.cve_relevance_years,
-                    "embedding_model": self.config.embedding_model
+                    "cve_relevance_years": self.config.cve_relevance_years
                 }
             }
         }
-        
-        # Validate output against schema
-        try:
-            validated_output = RefinedThreatsOutput(**output_data)
-            self.logger.info("Output validation successful")
-        except ValidationError as e:
-            self.logger.error(f"Output validation failed: {e}")
-            # Continue with saving even if validation fails
         
         # Save refined threats
         with open(self.config.refined_threats_output_path, 'w', encoding='utf-8') as f:
@@ -713,7 +834,7 @@ class ThreatRefiner:
 
 
 def get_event_loop():
-    """Get or create an event loop (works in Jupyter)."""
+    """Get or create an event loop (works in various environments)."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -731,29 +852,47 @@ async def main():
 
 
 def run_threat_refiner(config: Optional[Config] = None):
-    """Synchronous wrapper for running the threat refiner (useful for Jupyter)."""
+    """Synchronous wrapper for running the threat refiner."""
     if config is None:
         config = Config()
     
     refiner = ThreatRefiner(config)
     
-    # Check if we're in Jupyter/IPython
+    # Handle different async environments
     try:
-        import IPython
-        ipython = IPython.get_ipython()
-        if ipython is not None:
-            # We're in Jupyter, use nest_asyncio
+        # Check if we're in an environment with an existing event loop
+        try:
+            loop = asyncio.get_running_loop()
+            # If we get here, we're in an async context (like Jupyter)
+            # Try to use nest_asyncio if available
             try:
                 import nest_asyncio
                 nest_asyncio.apply()
+                success = loop.run_until_complete(refiner.refine_threats())
             except ImportError:
-                print("Warning: nest_asyncio not installed. Install it for better Jupyter compatibility.")
-    except ImportError:
-        pass
+                # Fallback: create a new loop in a thread
+                import threading
+                result = [None]
+                def run_in_thread():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    result[0] = new_loop.run_until_complete(refiner.refine_threats())
+                    new_loop.close()
+                
+                thread = threading.Thread(target=run_in_thread)
+                thread.start()
+                thread.join()
+                success = result[0]
+        except RuntimeError:
+            # No existing event loop, create one
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            success = loop.run_until_complete(refiner.refine_threats())
+            loop.close()
+    except Exception as e:
+        logger.error(f"Failed to run threat refiner: {e}")
+        success = False
     
-    # Run the async function
-    loop = get_event_loop()
-    success = loop.run_until_complete(refiner.refine_threats())
     return success
 
 
@@ -764,9 +903,18 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Run the main function
-    loop = get_event_loop()
-    success = loop.run_until_complete(main())
+    logger.info("--- Starting Threat Quality Improvement Script ---")
     
-    # Exit with appropriate code
-    sys.exit(0 if success else 1)
+    try:
+        # Run the main function
+        success = run_threat_refiner()
+        
+        # Exit with appropriate code
+        sys.exit(0 if success else 1)
+        
+    except KeyboardInterrupt:
+        logger.info("Script interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Script failed with error: {e}")
+        sys.exit(1)

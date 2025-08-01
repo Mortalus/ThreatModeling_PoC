@@ -1,0 +1,11 @@
+System: E-Commerce Platform
+External Entities: User (U), Payment Gateway (PG), Admin (A)
+Assets: Customer Database (DB_C), Product Database (DB_P), Session Store (CACHE)
+Processes: Web Server (WS), API Gateway (API), Payment Processor (PP), Admin Portal (AP)
+Trust Boundaries: Internet to DMZ, DMZ to Internal Network, Internal to Database Zone
+Data Flows:
+- From User to Web Server: Login credentials and session tokens, Confidential, HTTPS, JWT Authentication
+- From Web Server to API Gateway: API requests with user context, Confidential, HTTPS, mTLS
+- From API Gateway to Customer Database: Customer queries and updates, PII, TLS, Database credentials
+- From Payment Processor to Payment Gateway: Payment transactions, PCI, HTTPS, API Key authentication
+- From Admin to Admin Portal: Administrative commands, Confidential, HTTPS, MFA required

@@ -1,5 +1,12 @@
-# --- Dependencies ---
-# pip install openai pydantic python-dotenv qdrant-client requests ollama duckduckgo-search
+#!/usr/bin/env python3
+"""
+DFD to Threats Generator Script
+
+This script analyzes DFD (Data Flow Diagram) components and generates threats
+using the STRIDE methodology. Compatible with the threat modeling pipeline.
+
+Fixed version with improved error handling and compatibility.
+"""
 
 import os
 import json
@@ -7,205 +14,128 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import time
-
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError
-from openai import OpenAI
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-import ollama
-from duckduckgo_search import DDGS
+import sys
 
 # Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
+
+def get_config():
+    """Get configuration from environment with defaults."""
+    return {
+        'llm_provider': os.getenv('LLM_PROVIDER', 'scaleway'),
+        'llm_model': os.getenv('LLM_MODEL', 'llama-3.3-70b-instruct'),
+        'local_llm_endpoint': os.getenv('LOCAL_LLM_ENDPOINT', 'http://localhost:11434/api/generate'),
+        'custom_system_prompt': os.getenv('CUSTOM_SYSTEM_PROMPT', ''),
+        'timeout': int(os.getenv('PIPELINE_TIMEOUT', '5000')),
+        'input_dir': os.getenv('INPUT_DIR', './input_documents'),
+        'output_dir': os.getenv('OUTPUT_DIR', './output'),
+        'dfd_input_path': os.getenv('DFD_INPUT_PATH', './output/dfd_components.json'),
+        'threats_output_path': os.getenv('THREATS_OUTPUT_PATH', './output/identified_threats.json'),
+        'scw_api_url': os.getenv('SCW_API_URL', 'https://api.scaleway.ai/v1'),
+        'scw_secret_key': os.getenv('SCW_SECRET_KEY') or os.getenv('SCW_API_KEY') or os.getenv('SCALEWAY_API_KEY'),
+        'max_tokens': int(os.getenv('MAX_TOKENS', '2048')),
+        'temperature': float(os.getenv('TEMPERATURE', '0.4')),
+        'max_workers': int(os.getenv('MAX_WORKERS', '1')),  # Sequential for stability
+        'log_level': os.getenv('LOG_LEVEL', 'INFO')
+    }
+
+# Get configuration
+config = get_config()
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, config['log_level']),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Ensure directories exist
+os.makedirs(config['output_dir'], exist_ok=True)
 
 # --- Configuration ---
 class LLMProvider(Enum):
     SCALEWAY = "scaleway"
     OLLAMA = "ollama"
 
-# LLM Configuration
-LLM_PROVIDER = LLMProvider(os.getenv("LLM_PROVIDER", "scaleway").lower())
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.3-70b-instruct")
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-SCALEWAY_API_KEY = os.getenv("SCALEWAY_API_KEY", os.getenv("SCW_API_KEY"))
-SCALEWAY_PROJECT_ID = os.getenv("SCALEWAY_PROJECT_ID", "4a8fd76b-8606-46e6-afe6-617ce8eeb948")
-
-# Qdrant Configuration
-QDRANT_HOST = os.getenv("QDRANT_HOST", "homebase")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", None)
-QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "threat_models")
-QDRANT_USE_GRPC = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
-ENABLE_RAG = os.getenv("ENABLE_RAG", "true").lower() == "true"
-
-# Web Search Configuration
-ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
-WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3"))
-WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "wt-wt")  # worldwide
-# Note: timeout is not supported by duckduckgo-search library
-
-# File paths
-INPUT_DIR = os.getenv("INPUT_DIR", "./output")
-DFD_INPUT_PATH = os.getenv("DFD_INPUT_PATH", os.path.join(INPUT_DIR, "dfd_components.json"))
-THREATS_OUTPUT_PATH = os.getenv("THREATS_OUTPUT_PATH", os.path.join(INPUT_DIR, "identified_threats.json"))
-STRIDE_CONFIG_PATH = os.getenv("STRIDE_CONFIG_PATH", "stride_config.json")
-
-# Model parameters
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2048"))
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.4"))
-RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))  # Number of parallel workers
-
-# Setup logging
-logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")),
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Ensure directories exist
-os.makedirs(INPUT_DIR, exist_ok=True)
-
-# --- Pydantic Models ---
-class Threat(BaseModel):
-    component_name: str
-    stride_category: str
-    threat_description: str
-    mitigation_suggestion: str
-    impact: str = Field(pattern="^(Low|Medium|High)$")
-    likelihood: str = Field(pattern="^(Low|Medium|High)$")
-    references: List[str]
-    risk_score: str = Field(pattern="^(Critical|High|Medium|Low)$")
-
-class ThreatsOutput(BaseModel):
-    threats: List[Threat]
-    metadata: Dict[str, Any]
-
-# --- Web Search Client ---
-class WebSearchClient:
-    def __init__(self):
-        self.ddgs = DDGS()
-        self.search_cache = {}
-        self.cache_lock = threading.Lock()
-        
-    def search(self, query: str, max_results: int = WEB_SEARCH_MAX_RESULTS) -> List[Dict[str, str]]:
-        """Search the web for security-related information."""
-        # Check cache first
-        with self.cache_lock:
-            if query in self.search_cache:
-                logger.debug(f"Using cached results for query: {query}")
-                return self.search_cache[query]
-        
-        try:
-            logger.info(f"Web searching for: {query}")
-            results = []
-            
-            # Perform search without timeout parameter (not supported)
-            search_results = self.ddgs.text(
-                query,
-                region=WEB_SEARCH_REGION,
-                max_results=max_results
-            )
-            
-            for result in search_results:
-                results.append({
-                    'title': result.get('title', ''),
-                    'body': result.get('body', ''),
-                    'url': result.get('href', ''),
-                    'source': 'web_search'
-                })
-            
-            # Cache results
-            with self.cache_lock:
-                self.search_cache[query] = results
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Web search error for query '{query}': {e}")
-            return []
+# --- Simple data classes (avoiding Pydantic for compatibility) ---
+class Threat:
+    def __init__(self, component_name: str, stride_category: str, threat_description: str,
+                 mitigation_suggestion: str, impact: str, likelihood: str, 
+                 references: List[str] = None, risk_score: str = "Medium"):
+        self.component_name = component_name
+        self.stride_category = stride_category
+        self.threat_description = threat_description
+        self.mitigation_suggestion = mitigation_suggestion
+        self.impact = impact
+        self.likelihood = likelihood
+        self.references = references or []
+        self.risk_score = risk_score
     
-    def search_security_context(self, component_info: str, stride_category: str) -> str:
-        """Search for security context specific to a component and STRIDE category."""
-        # Extract key information from component
-        component_type = "unknown"
-        component_name = "unknown"
-        
-        try:
-            if isinstance(component_info, str):
-                comp_dict = json.loads(component_info)
-                component_type = comp_dict.get('type', 'unknown')
-                component_name = comp_dict.get('name', 'unknown')
-        except:
-            pass
-        
-        # Create targeted security queries
-        queries = [
-            f"{component_type} {stride_category} vulnerability",
-            f"{stride_category} attack {component_type} security",
-            f"STRIDE {stride_category} threat modeling {component_type}"
-        ]
-        
-        all_results = []
-        for query in queries:
-            results = self.search(query, max_results=2)
-            all_results.extend(results)
-            
-            # Add small delay to avoid rate limiting
-            time.sleep(0.5)
-        
-        # Format results as context
-        if all_results:
-            context_parts = []
-            for i, result in enumerate(all_results[:5]):  # Limit to top 5 results
-                context_parts.append(f"[Source {i+1}: {result['title']}]")
-                context_parts.append(f"{result['body']}")
-                context_parts.append(f"URL: {result['url']}")
-                context_parts.append("---")
-            
-            return "\n".join(context_parts)
-        
-        return "No web search results found for this component and threat category."
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'component_name': self.component_name,
+            'stride_category': self.stride_category,
+            'threat_description': self.threat_description,
+            'mitigation_suggestion': self.mitigation_suggestion,
+            'impact': self.impact,
+            'likelihood': self.likelihood,
+            'references': self.references,
+            'risk_score': self.risk_score
+        }
 
 # --- LLM Client Factory ---
 class LLMClient:
     def __init__(self):
-        self.provider = LLM_PROVIDER
-        self.model = LLM_MODEL
-        self.client = self._create_client()
+        self.provider = LLMProvider(config['llm_provider'].lower())
+        self.model = config['llm_model']
+        self.client = None
+        self._init_client()
     
-    def _create_client(self):
-        if self.provider == LLMProvider.SCALEWAY:
-            if not SCALEWAY_API_KEY:
-                raise ValueError("SCALEWAY_API_KEY environment variable is required for Scaleway provider")
-            return OpenAI(
-                base_url=f"https://api.scaleway.ai/{SCALEWAY_PROJECT_ID}/v1",
-                api_key=SCALEWAY_API_KEY
-            )
-        elif self.provider == LLMProvider.OLLAMA:
-            # Test Ollama connection
-            try:
-                ollama.list()
-                return None  # Ollama uses function calls, not a client object
-            except Exception as e:
-                raise ConnectionError(f"Failed to connect to Ollama at {OLLAMA_HOST}: {e}")
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.provider}")
+    def _init_client(self):
+        """Initialize the LLM client with error handling."""
+        try:
+            if self.provider == LLMProvider.SCALEWAY:
+                if not config['scw_secret_key']:
+                    logger.warning("No Scaleway API key found, LLM features will be disabled")
+                    return
+                
+                # Try to import OpenAI
+                try:
+                    from openai import OpenAI
+                    self.client = OpenAI(
+                        base_url=config['scw_api_url'],
+                        api_key=config['scw_secret_key']
+                    )
+                    logger.info("Scaleway client initialized successfully")
+                except ImportError:
+                    logger.warning("OpenAI library not available, LLM features will be disabled")
+                    
+            elif self.provider == LLMProvider.OLLAMA:
+                # For Ollama, we'll validate later when making requests
+                logger.info("Ollama client configured")
+            else:
+                logger.error(f"Unsupported LLM provider: {self.provider}")
+        
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM client: {e}")
+            self.client = None
     
     def generate(self, prompt: str, json_mode: bool = True) -> str:
         """Generate text using the configured LLM provider."""
+        if not self.client and self.provider == LLMProvider.SCALEWAY:
+            raise Exception("LLM client not initialized")
+            
         try:
             if self.provider == LLMProvider.SCALEWAY:
                 messages = [{"role": "user", "content": prompt}]
                 kwargs = {
                     "model": self.model,
                     "messages": messages,
-                    "max_tokens": MAX_TOKENS,
-                    "temperature": TEMPERATURE
+                    "max_tokens": config['max_tokens'],
+                    "temperature": config['temperature']
                 }
                 if json_mode:
                     kwargs["response_format"] = {"type": "json_object"}
@@ -214,133 +144,38 @@ class LLMClient:
                 return response.choices[0].message.content
             
             elif self.provider == LLMProvider.OLLAMA:
-                # For Ollama, we need to add JSON instruction to the prompt
-                if json_mode:
-                    prompt = prompt + "\n\nIMPORTANT: Output ONLY valid JSON, no other text."
-                
-                response = ollama.generate(
-                    model=self.model,
-                    prompt=prompt,
-                    options={
-                        "temperature": TEMPERATURE,
-                        "num_predict": MAX_TOKENS,
-                    }
-                )
-                return response['response']
+                # For Ollama, use requests if available
+                try:
+                    import requests
+                    
+                    if json_mode:
+                        prompt = prompt + "\n\nIMPORTANT: Output ONLY valid JSON, no other text."
+                    
+                    response = requests.post(
+                        config['local_llm_endpoint'],
+                        json={
+                            "model": self.model,
+                            "prompt": prompt,
+                            "stream": False,
+                            "options": {
+                                "temperature": config['temperature'],
+                                "num_predict": config['max_tokens'],
+                            }
+                        },
+                        timeout=60
+                    )
+                    
+                    if response.status_code == 200:
+                        return response.json().get('response', '')
+                    else:
+                        raise Exception(f"Ollama API error: {response.status_code} {response.text}")
+                        
+                except ImportError:
+                    raise Exception("Requests library not available for Ollama")
                 
         except Exception as e:
             logger.error(f"LLM generation error: {e}")
             raise
-
-# --- Qdrant Client ---
-class QdrantRAG:
-    def __init__(self):
-        self.client = self._create_client()
-        self.collection_name = QDRANT_COLLECTION
-        self._verify_collection()
-    
-    def _create_client(self):
-        """Create Qdrant client with appropriate configuration."""
-        # For local Qdrant
-        if not QDRANT_API_KEY and QDRANT_HOST in ['localhost', '127.0.0.1']:
-            return QdrantClient(
-                host=QDRANT_HOST,
-                port=QDRANT_PORT
-            )
-        
-        # For Qdrant Cloud or authenticated instances
-        kwargs = {
-            "host": QDRANT_HOST,
-            "port": QDRANT_PORT,
-        }
-        
-        if QDRANT_API_KEY:
-            kwargs["api_key"] = QDRANT_API_KEY
-        
-        if QDRANT_USE_GRPC:
-            kwargs["grpc_port"] = 6334
-            kwargs["prefer_grpc"] = True
-        
-        return QdrantClient(**kwargs)
-    
-    def _verify_collection(self):
-        """Verify that the collection exists."""
-        try:
-            collections = self.client.get_collections().collections
-            collection_names = [c.name for c in collections]
-            
-            if self.collection_name not in collection_names:
-                logger.warning(f"Collection '{self.collection_name}' not found in Qdrant. Available collections: {collection_names}")
-                raise ValueError(f"Collection '{self.collection_name}' does not exist in Qdrant")
-            
-            logger.info(f"Successfully connected to Qdrant collection: {self.collection_name}")
-        except Exception as e:
-            logger.error(f"Failed to verify Qdrant collection: {e}")
-            raise
-    
-    def search(self, query_text: str, top_k: int = RAG_TOP_K) -> List[str]:
-        """Search for similar documents in Qdrant."""
-        try:
-            # First, check if the collection has points
-            collection_info = self.client.get_collection(self.collection_name)
-            if collection_info.points_count == 0:
-                logger.warning(f"Collection '{self.collection_name}' has no points. Skipping RAG search.")
-                return []
-            
-            # Try different search methods based on collection configuration
-            try:
-                # Method 1: Try neural search if collection supports it
-                from qdrant_client.models import SearchRequest, NamedVector
-                
-                # Check if collection has named vectors
-                if collection_info.config.params.vectors:
-                    # If vectors is a dict, we have named vectors
-                    if isinstance(collection_info.config.params.vectors, dict):
-                        vector_names = list(collection_info.config.params.vectors.keys())
-                        if vector_names:
-                            # Use the first available vector name
-                            vector_name = vector_names[0]
-                            logger.info(f"Using named vector: {vector_name}")
-                            
-                            # For now, skip actual search if we don't have embeddings
-                            logger.warning("Text-to-vector embedding not configured. Returning empty context.")
-                            return []
-                
-                # Method 2: Try to use scroll to get some relevant documents
-                # This is a fallback when we can't do vector search
-                logger.info("Falling back to scroll method to retrieve documents")
-                scroll_result = self.client.scroll(
-                    collection_name=self.collection_name,
-                    limit=top_k,
-                    with_payload=True,
-                    with_vectors=False
-                )
-                
-                contexts = []
-                if scroll_result and scroll_result[0]:
-                    for point in scroll_result[0]:
-                        if point.payload:
-                            # Look for text content in various possible fields
-                            text_content = None
-                            for field in ['text', 'content', 'description', 'threat_description']:
-                                if field in point.payload:
-                                    text_content = point.payload[field]
-                                    break
-                            
-                            if text_content:
-                                # Simple keyword matching as a basic relevance filter
-                                if any(keyword in text_content.lower() for keyword in query_text.lower().split()):
-                                    contexts.append(text_content)
-                
-                return contexts[:top_k]
-                
-            except Exception as search_error:
-                logger.error(f"Search method failed: {search_error}")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Qdrant search error: {e}")
-            return []
 
 # --- STRIDE Definitions ---
 DEFAULT_STRIDE_DEFINITIONS = {
@@ -354,11 +189,12 @@ DEFAULT_STRIDE_DEFINITIONS = {
 
 def load_stride_definitions() -> Dict[str, tuple]:
     """Load STRIDE definitions from file or use defaults."""
-    if os.path.exists(STRIDE_CONFIG_PATH):
+    stride_config_path = os.path.join(config['output_dir'], "stride_config.json")
+    if os.path.exists(stride_config_path):
         try:
-            with open(STRIDE_CONFIG_PATH, 'r') as f:
+            with open(stride_config_path, 'r', encoding='utf-8') as f:
                 custom_stride = json.load(f)
-            logger.info(f"Loaded custom STRIDE definitions from '{STRIDE_CONFIG_PATH}'")
+            logger.info(f"Loaded custom STRIDE definitions from '{stride_config_path}'")
             # Convert to expected format
             return {k: (v[0], v[1]) if isinstance(v, list) else v for k, v in custom_stride.items()}
         except Exception as e:
@@ -366,13 +202,131 @@ def load_stride_definitions() -> Dict[str, tuple]:
     
     return DEFAULT_STRIDE_DEFINITIONS
 
+# --- Rule-based Threat Generator (Fallback) ---
+class RuleBasedThreatGenerator:
+    """Fallback threat generator using predefined rules."""
+    
+    def __init__(self):
+        self.stride_definitions = load_stride_definitions()
+    
+    def generate_threats_for_component(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate rule-based threats for a component."""
+        threats = []
+        component_type = component.get('type', 'Unknown')
+        component_name = component.get('name', 'Unknown')
+        
+        if component_type == 'External Entity':
+            threats.extend(self._generate_external_entity_threats(component_name))
+        elif component_type == 'Process':
+            threats.extend(self._generate_process_threats(component_name))
+        elif component_type == 'Data Store':
+            threats.extend(self._generate_data_store_threats(component_name))
+        elif component_type == 'Data Flow':
+            threats.extend(self._generate_data_flow_threats(component))
+        
+        return threats
+    
+    def _generate_external_entity_threats(self, name: str) -> List[Dict[str, Any]]:
+        """Generate threats for external entities."""
+        return [
+            {
+                'component_name': name,
+                'stride_category': 'S',
+                'threat_description': f'An attacker could impersonate the {name} entity to gain unauthorized access.',
+                'mitigation_suggestion': 'Implement strong authentication mechanisms such as multi-factor authentication or certificates.',
+                'impact': 'High',
+                'likelihood': 'Medium',
+                'references': ['CWE-287: Improper Authentication', 'OWASP A07:2021 – Identification and Authentication Failures'],
+                'risk_score': 'High'
+            }
+        ]
+    
+    def _generate_process_threats(self, name: str) -> List[Dict[str, Any]]:
+        """Generate threats for processes."""
+        return [
+            {
+                'component_name': name,
+                'stride_category': 'T',
+                'threat_description': f'An attacker could tamper with the {name} process, modifying its behavior or data.',
+                'mitigation_suggestion': 'Implement input validation, code signing, and integrity checks.',
+                'impact': 'High',
+                'likelihood': 'Medium',
+                'references': ['CWE-20: Improper Input Validation', 'OWASP A03:2021 – Injection'],
+                'risk_score': 'High'
+            },
+            {
+                'component_name': name,
+                'stride_category': 'E',
+                'threat_description': f'An attacker could exploit vulnerabilities in {name} to gain elevated privileges.',
+                'mitigation_suggestion': 'Run processes with least privilege and implement proper access controls.',
+                'impact': 'Critical',
+                'likelihood': 'Low',
+                'references': ['CWE-269: Improper Privilege Management', 'OWASP A01:2021 – Broken Access Control'],
+                'risk_score': 'High'
+            }
+        ]
+    
+    def _generate_data_store_threats(self, name: str) -> List[Dict[str, Any]]:
+        """Generate threats for data stores."""
+        return [
+            {
+                'component_name': name,
+                'stride_category': 'I',
+                'threat_description': f'Unauthorized access to {name} could result in sensitive data disclosure.',
+                'mitigation_suggestion': 'Implement database access controls, encryption at rest, and audit logging.',
+                'impact': 'Critical',
+                'likelihood': 'Medium',
+                'references': ['CWE-200: Exposure of Sensitive Information', 'OWASP A01:2021 – Broken Access Control'],
+                'risk_score': 'Critical'
+            },
+            {
+                'component_name': name,
+                'stride_category': 'T',
+                'threat_description': f'An attacker could modify or corrupt data stored in {name}.',
+                'mitigation_suggestion': 'Implement database integrity constraints and backup procedures.',
+                'impact': 'High',
+                'likelihood': 'Low',
+                'references': ['CWE-89: SQL Injection', 'OWASP A03:2021 – Injection'],
+                'risk_score': 'Medium'
+            }
+        ]
+    
+    def _generate_data_flow_threats(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Generate threats for data flows."""
+        details = component.get('details', {})
+        source = details.get('source', 'Unknown')
+        destination = details.get('destination', 'Unknown')
+        component_name = f"{source} → {destination}"
+        
+        return [
+            {
+                'component_name': component_name,
+                'stride_category': 'I',
+                'threat_description': f'Data transmitted between {source} and {destination} could be intercepted.',
+                'mitigation_suggestion': 'Use encryption in transit (TLS/HTTPS) and implement secure communication protocols.',
+                'impact': 'High',
+                'likelihood': 'Medium',
+                'references': ['CWE-319: Cleartext Transmission of Sensitive Information', 'OWASP A02:2021 – Cryptographic Failures'],
+                'risk_score': 'High'
+            },
+            {
+                'component_name': component_name,
+                'stride_category': 'T',
+                'threat_description': f'An attacker could intercept and modify data between {source} and {destination}.',
+                'mitigation_suggestion': 'Implement message integrity checks and use authenticated encryption.',
+                'impact': 'High',
+                'likelihood': 'Medium',
+                'references': ['CWE-345: Insufficient Verification of Data Authenticity', 'OWASP A02:2021 – Cryptographic Failures'],
+                'risk_score': 'High'
+            }
+        ]
+
 # --- Threat Analysis ---
 class ThreatAnalyzer:
-    def __init__(self, llm_client: LLMClient, rag_client: Optional[QdrantRAG] = None, web_search_client: Optional[WebSearchClient] = None):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm = llm_client
-        self.rag = rag_client
-        self.web_search = web_search_client
         self.stride_definitions = load_stride_definitions()
+        self.rule_generator = RuleBasedThreatGenerator()
         self.threat_prompt_template = """
 You are a cybersecurity architect specializing in threat modeling using the STRIDE methodology.
 Your task is to generate 1-2 specific threats for a given DFD component, focusing ONLY on a single STRIDE category.
@@ -383,24 +337,13 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
 **STRIDE Category to Focus On:**
 - **{stride_category} ({stride_name}):** {stride_definition}
 
-**Security Context from Knowledge Base (RAG):**
-'''
-{rag_context}
-'''
-
-**Security Context from Web Search:**
-'''
-{web_context}
-'''
-
 **Instructions:**
 1. Generate 1-2 distinct and realistic threats for the component that fall **strictly** under the '{stride_name}' category.
 2. Be specific and relate the threat directly to the component's type and details.
-3. Use BOTH the Knowledge Base context AND Web Search context to create specific descriptions, actionable mitigations, and accurate references.
-4. Prioritize recent security findings from web search when applicable.
-5. Provide a realistic risk assessment (Impact, Likelihood, Score).
-6. Include references from both sources when relevant.
-7. Output ONLY a valid JSON object with a single key "threats", containing a list of threat objects.
+3. Provide actionable mitigation suggestions based on industry best practices.
+4. Provide a realistic risk assessment (Impact, Likelihood, Score).
+5. Include relevant security references or standards.
+6. Output ONLY a valid JSON object with a single key "threats", containing a list of threat objects.
 
 **JSON Schema:**
 {{
@@ -408,15 +351,23 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
     {{
       "component_name": "string",
       "stride_category": "{stride_category}",
-      "threat_description": "string",
-      "mitigation_suggestion": "string",
+      "threat_description": "string (be specific and detailed)",
+      "mitigation_suggestion": "string (actionable recommendations)",
       "impact": "Low|Medium|High",
       "likelihood": "Low|Medium|High",
-      "references": ["string"],
+      "references": ["string (security standards, best practices)"],
       "risk_score": "Critical|High|Medium|Low"
     }}
   ]
 }}
+
+**Example for reference:**
+If analyzing a Database component for Information Disclosure:
+- Threat: SQL injection allowing unauthorized data access
+- Mitigation: Input validation, parameterized queries, least privilege access
+- Impact: High (sensitive data exposure)
+- Likelihood: Medium (common attack vector)
+- Risk Score: High
 """
     
     def calculate_risk_score(self, impact: str, likelihood: str) -> str:
@@ -432,41 +383,24 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
     
     def analyze_component(self, component: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Analyze a single component for all STRIDE categories."""
-        component_str = json.dumps(component)
         component_name = component.get("name", component.get("details", {}).get("name", component.get("type", "Unknown")))
         
         logger.info(f"Analyzing component: {component_name}")
         
+        # If LLM is not available, use rule-based generation
+        if not self.llm or not self.llm.client:
+            logger.info(f"  Using rule-based threat generation")
+            return self.rule_generator.generate_threats_for_component(component)
+        
+        # Use LLM-based generation
+        component_str = json.dumps(component, indent=2)
         all_threats = []
         
         for cat_letter, (cat_name, cat_def) in self.stride_definitions.items():
             logger.info(f"  Generating threats for STRIDE category: {cat_name}")
             
-            # Get RAG context if enabled
-            rag_context = "No RAG context available."
-            if self.rag:
-                try:
-                    rag_contexts = self.rag.search(component_str)
-                    if rag_contexts:
-                        rag_context = "\n---\n".join(rag_contexts)
-                        logger.info(f"    Found {len(rag_contexts)} RAG contexts")
-                except Exception as e:
-                    logger.warning(f"    RAG search failed: {e}")
-            
-            # Get web search context if enabled
-            web_context = "No web search context available."
-            if self.web_search:
-                try:
-                    web_context = self.web_search.search_security_context(component_str, cat_name)
-                    if web_context and web_context != "No web search results found for this component and threat category.":
-                        logger.info(f"    Found web search contexts")
-                except Exception as e:
-                    logger.warning(f"    Web search failed: {e}")
-            
             prompt = self.threat_prompt_template.format(
                 component_info=component_str,
-                rag_context=rag_context,
-                web_context=web_context,
                 stride_category=cat_letter,
                 stride_name=cat_name,
                 stride_definition=cat_def
@@ -474,6 +408,14 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
             
             try:
                 response = self.llm.generate(prompt, json_mode=True)
+                
+                # Clean response if needed
+                response = response.strip()
+                if response.startswith("```json"):
+                    response = response[7:]
+                if response.endswith("```"):
+                    response = response[:-3]
+                
                 data = json.loads(response)
                 
                 if isinstance(data, dict) and isinstance(data.get("threats"), list):
@@ -491,44 +433,44 @@ Your task is to generate 1-2 specific threats for a given DFD component, focusin
                             threat.get('likelihood', 'Low')
                         )
                         
-                        # Add source indicators to references
-                        enhanced_refs = []
-                        for ref in threat.get('references', []):
-                            if ref.startswith('http'):
-                                enhanced_refs.append(f"[Web] {ref}")
-                            else:
-                                enhanced_refs.append(f"[KB] {ref}")
-                        threat['references'] = enhanced_refs
+                        # Ensure references is a list
+                        if not isinstance(threat.get('references'), list):
+                            threat['references'] = []
+                        
+                        # Add default references if none provided
+                        if not threat['references']:
+                            threat['references'] = [
+                                "OWASP Top 10",
+                                "NIST Cybersecurity Framework",
+                                f"STRIDE {cat_name} category best practices"
+                            ]
                     
                     all_threats.extend(threats)
                     logger.info(f"    Generated {len(threats)} threat(s)")
+                else:
+                    logger.warning(f"    Invalid response format for {cat_name}")
                 
+            except json.JSONDecodeError as e:
+                logger.warning(f"    JSON decode error for {cat_name}: {e}")
+                logger.info(f"    Falling back to rule-based generation for this category")
+                # Fall back to rule-based for this category
+                if cat_letter in ['S', 'T', 'I']:  # Most important categories
+                    fallback_threats = self.rule_generator.generate_threats_for_component(component)
+                    category_threats = [t for t in fallback_threats if t.get('stride_category') == cat_letter]
+                    all_threats.extend(category_threats)
+                    
             except Exception as e:
-                logger.error(f"    Error generating threats for {cat_name}: {e}")
+                logger.warning(f"    Error generating threats for {cat_name}: {e}")
+                # Continue with other categories
+                continue
         
         return all_threats
-
-# --- Progress Tracking ---
-class ProgressTracker:
-    def __init__(self, total_components: int):
-        self.total = total_components
-        self.completed = 0
-        self.lock = threading.Lock()
-        
-    def increment(self):
-        with self.lock:
-            self.completed += 1
-            return self.completed
-    
-    def get_progress(self):
-        with self.lock:
-            return self.completed, self.total
 
 # --- Main Functions ---
 def load_dfd_data(filepath: str) -> Dict[str, Any]:
     """Load DFD data from file."""
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         
         # Handle nested structure - check if 'dfd' key exists
@@ -554,8 +496,7 @@ def extract_components(dfd_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         'processes': 'Process',
         'assets': 'Data Store',
         'data_stores': 'Data Store',
-        'data_flows': 'Data Flow',
-        'trust_boundaries': 'Trust Boundary'
+        'data_flows': 'Data Flow'
     }
     
     for key, component_type in component_mappings.items():
@@ -583,18 +524,6 @@ def extract_components(dfd_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                             component['name'] = f"{item['source']} → {item['destination']}"
                         components.append(component)
     
-    # Add project context if available
-    if 'project_name' in dfd_data:
-        components.append({
-            "type": "Project Context",
-            "name": dfd_data.get('project_name', 'Unknown Project'),
-            "details": {
-                "project_name": dfd_data.get('project_name'),
-                "project_version": dfd_data.get('project_version'),
-                "industry_context": dfd_data.get('industry_context')
-            }
-        })
-    
     return components
 
 def deduplicate_threats(threats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -604,51 +533,71 @@ def deduplicate_threats(threats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     
     for threat in threats:
         desc = threat.get('threat_description', '')
-        if desc and desc not in seen_descriptions:
-            seen_descriptions.add(desc)
+        # Create a simplified version for comparison
+        simplified_desc = desc.lower().strip()
+        if simplified_desc and simplified_desc not in seen_descriptions:
+            seen_descriptions.add(simplified_desc)
             unique_threats.append(threat)
     
     return unique_threats
+
+def write_progress(step: int, current: int, total: int, message: str, details: str = ""):
+    """Write progress information to a file that the frontend can read."""
+    try:
+        progress_data = {
+            'step': step,
+            'current': current,
+            'total': total,
+            'progress': round((current / total * 100) if total > 0 else 0, 1),
+            'message': message,
+            'details': details,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        progress_file = os.path.join(config['output_dir'], f'step_{step}_progress.json')
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f, indent=2)
+            
+    except Exception as e:
+        logger.warning(f"Could not write progress: {e}")
+
+def check_kill_signal(step: int) -> bool:
+    """Check if user requested to kill this step."""
+    try:
+        kill_file = os.path.join(config['output_dir'], f'step_{step}_kill.flag')
+        if os.path.exists(kill_file):
+            logger.info("Kill signal detected, stopping execution")
+            return True
+        return False
+    except:
+        return False
 
 def main():
     """Main execution function."""
     logger.info("=== Starting Threat Modeling Analysis ===")
     
+    # Initialize progress
+    write_progress(3, 0, 100, "Initializing threat analysis", "Loading components")
+    
     # Initialize clients
+    llm_client = None
     try:
         llm_client = LLMClient()
-        logger.info(f"Initialized LLM client: {LLM_PROVIDER.value} with model {LLM_MODEL}")
-        
-        rag_client = None
-        if ENABLE_RAG:
-            try:
-                rag_client = QdrantRAG()
-                logger.info("Initialized Qdrant RAG client")
-            except Exception as rag_error:
-                logger.warning(f"Failed to initialize RAG client: {rag_error}")
-                logger.info("Continuing without RAG support")
+        if llm_client.client:
+            logger.info(f"Initialized LLM client: {config['llm_provider']} with model {config['llm_model']}")
         else:
-            logger.info("RAG is disabled (ENABLE_RAG=false)")
+            logger.info("LLM client not available, using rule-based generation")
         
-        web_search_client = None
-        if ENABLE_WEB_SEARCH:
-            try:
-                web_search_client = WebSearchClient()
-                logger.info("Initialized Web Search client")
-            except Exception as web_error:
-                logger.warning(f"Failed to initialize Web Search client: {web_error}")
-                logger.info("Continuing without web search support")
-        else:
-            logger.info("Web search is disabled (ENABLE_WEB_SEARCH=false)")
-        
-        analyzer = ThreatAnalyzer(llm_client, rag_client, web_search_client)
+        analyzer = ThreatAnalyzer(llm_client)
     except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
-        return 1
+        logger.warning(f"Failed to initialize LLM services: {e}")
+        logger.info("Continuing with rule-based threat generation")
+        analyzer = ThreatAnalyzer(None)
     
     # Load DFD data
     try:
-        dfd_data = load_dfd_data(DFD_INPUT_PATH)
+        write_progress(3, 10, 100, "Loading DFD data", "Reading component definitions")
+        dfd_data = load_dfd_data(config['dfd_input_path'])
         components = extract_components(dfd_data)
         logger.info(f"Found {len(components)} components to analyze")
         
@@ -661,56 +610,70 @@ def main():
         logger.info("Component breakdown:")
         for comp_type, count in component_types.items():
             logger.info(f"  - {comp_type}: {count}")
+        
+        write_progress(3, 20, 100, "Components loaded", f"Found {len(components)} components")
     
     except Exception as e:
         logger.error(f"Failed to load or parse DFD data: {e}")
+        write_progress(3, 0, 100, "Failed", f"Error: {str(e)}")
         return 1
     
-    # Analyze components in parallel
-    logger.info(f"Using {MAX_WORKERS} parallel workers for threat analysis")
+    # Analyze components sequentially for stability
+    logger.info("Analyzing components sequentially for stability")
     all_threats = []
-    progress_tracker = ProgressTracker(len(components))
     
-    def analyze_with_progress(component, index):
-        """Wrapper function that includes progress tracking."""
+    # Calculate progress steps
+    total_steps = len(components) * len(DEFAULT_STRIDE_DEFINITIONS)  # Each component analyzed for each STRIDE category
+    current_step = 0
+    base_progress = 20
+    analysis_progress_range = 70  # 20-90% for analysis
+    
+    for i, component in enumerate(components):
         try:
+            # Check for kill signal
+            if check_kill_signal(3):
+                write_progress(3, current_step, total_steps, "Analysis cancelled", "User requested stop")
+                return 1
+            
             component_name = component.get('name', 'Unknown')
-            logger.info(f"Starting analysis of component {index+1}/{len(components)}: {component_name}")
+            logger.info(f"Analyzing component {i+1}/{len(components)}: {component_name}")
+            
+            # Update progress at component level
+            component_progress = base_progress + int((i / len(components)) * analysis_progress_range)
+            write_progress(
+                3, 
+                component_progress, 
+                100, 
+                f"Analyzing component {i+1}/{len(components)}", 
+                f"Processing: {component_name}"
+            )
             
             threats = analyzer.analyze_component(component)
+            all_threats.extend(threats)
             
-            completed = progress_tracker.increment()
-            logger.info(f"Completed {completed}/{len(components)} components ({completed/len(components)*100:.1f}%)")
+            # Update step counter
+            current_step += len(DEFAULT_STRIDE_DEFINITIONS)
             
-            return threats
+            # Small delay to avoid overwhelming the API
+            if llm_client and llm_client.client:
+                time.sleep(0.5)
+            
         except Exception as e:
             logger.error(f"Error analyzing component {component_name}: {e}")
-            progress_tracker.increment()  # Still increment to track progress
-            return []
-    
-    # Use ThreadPoolExecutor for parallel processing
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit all tasks
-        future_to_component = {
-            executor.submit(analyze_with_progress, component, i): (component, i) 
-            for i, component in enumerate(components)
-        }
-        
-        # Collect results as they complete
-        for future in as_completed(future_to_component):
-            component, index = future_to_component[future]
-            try:
-                threats = future.result()
-                all_threats.extend(threats)
-            except Exception as e:
-                component_name = component.get('name', 'Unknown')
-                logger.error(f"Failed to get results for component {component_name}: {e}")
+            continue
     
     # Post-process results
+    write_progress(3, 90, 100, "Post-processing threats", "Removing duplicates")
     all_threats = deduplicate_threats(all_threats)
     logger.info(f"Generated {len(all_threats)} unique threats")
     
+    if not all_threats:
+        logger.error("No threats were generated!")
+        write_progress(3, 100, 100, "Failed", "No threats generated")
+        return 1
+    
     # Sort by risk score
+    write_progress(3, 95, 100, "Finalizing results", "Sorting by risk score")
     risk_order = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
     all_threats.sort(key=lambda t: risk_order.get(t.get('risk_score', 'Low'), 0), reverse=True)
     
@@ -719,15 +682,12 @@ def main():
         "threats": all_threats,
         "metadata": {
             "timestamp": datetime.now().isoformat(),
-            "source_dfd": os.path.basename(DFD_INPUT_PATH),
-            "llm_provider": LLM_PROVIDER.value,
-            "llm_model": LLM_MODEL,
-            "rag_enabled": ENABLE_RAG and rag_client is not None,
-            "web_search_enabled": ENABLE_WEB_SEARCH and web_search_client is not None,
-            "qdrant_collection": QDRANT_COLLECTION if (ENABLE_RAG and rag_client) else None,
+            "source_dfd": os.path.basename(config['dfd_input_path']),
+            "llm_provider": config['llm_provider'],
+            "llm_model": config['llm_model'],
             "total_threats": len(all_threats),
             "components_analyzed": len(components),
-            "parallel_workers": MAX_WORKERS,
+            "generation_method": "LLM" if (llm_client and llm_client.client) else "Rule-based",
             "dfd_structure": {
                 "project_name": dfd_data.get('project_name', 'Unknown'),
                 "industry_context": dfd_data.get('industry_context', 'Unknown')
@@ -735,19 +695,38 @@ def main():
         }
     }
     
-    # Validate output
-    try:
-        validated_output = ThreatsOutput(**output)
-        logger.info("Output validation successful")
-    except ValidationError as e:
-        logger.error(f"Output validation failed: {e}")
+    # Validate basic structure
+    if not isinstance(output.get('threats'), list):
+        logger.error("Invalid output structure - threats must be a list")
         return 1
     
-    # Save results
-    with open(THREATS_OUTPUT_PATH, 'w') as f:
-        json.dump(output, f, indent=2)
+    for i, threat in enumerate(output['threats']):
+        if not isinstance(threat, dict):
+            logger.error(f"Invalid threat structure at index {i}")
+            return 1
+        
+        required_fields = ['component_name', 'stride_category', 'threat_description', 
+                          'mitigation_suggestion', 'impact', 'likelihood']
+        for field in required_fields:
+            if field not in threat:
+                logger.error(f"Missing required field '{field}' in threat {i}")
+                return 1
     
-    logger.info(f"Results saved to '{THREATS_OUTPUT_PATH}'")
+    logger.info("Output validation successful")
+    
+    # Save results
+    try:
+        write_progress(3, 98, 100, "Saving results", config['threats_output_path'])
+        with open(config['threats_output_path'], 'w', encoding='utf-8') as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"Results saved to '{config['threats_output_path']}'")
+        write_progress(3, 100, 100, "Complete", f"Generated {len(all_threats)} threats")
+    except Exception as e:
+        logger.error(f"Failed to save results: {e}")
+        write_progress(3, 100, 100, "Failed", f"Save error: {str(e)}")
+        return 1
+    
     logger.info("=== Threat Modeling Analysis Complete ===")
     
     # Print summary
@@ -758,11 +737,16 @@ def main():
     print(f"- High threats: {sum(1 for t in all_threats if t.get('risk_score') == 'High')}")
     print(f"- Medium threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Medium')}")
     print(f"- Low threats: {sum(1 for t in all_threats if t.get('risk_score') == 'Low')}")
-    print(f"- Parallel workers used: {MAX_WORKERS}")
-    print(f"- RAG enabled: {ENABLE_RAG and rag_client is not None}")
-    print(f"- Web search enabled: {ENABLE_WEB_SEARCH and web_search_client is not None}")
+    
+    # Clean up progress file
+    try:
+        progress_file = os.path.join(config['output_dir'], f'step_3_progress.json')
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
+    except:
+        pass
     
     return 0
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

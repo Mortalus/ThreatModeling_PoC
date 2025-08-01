@@ -1,0 +1,11 @@
+System: Banking Application
+External Entities: Customer (C), ATM Network (ATM), Credit Bureau (CB), Regulatory Authority (RA)
+Assets: Account Database (DB_ACC), Transaction History (DB_TXN), KYC Documents (DOC)
+Processes: Mobile App Backend (MAB), Core Banking System (CBS), Fraud Detection (FD), Reporting Service (RS)
+Trust Boundaries: Mobile to Backend, Backend to Core Banking, Core to External Services
+Data Flows:
+- From Customer to Mobile App Backend: Account access and transactions, PCI/PII, HTTPS, Biometric + PIN
+- From Mobile App Backend to Core Banking System: Transaction processing, Confidential, mTLS, Certificate auth
+- From Core Banking to Account Database: Account updates, PCI, TLS, Vault-managed credentials
+- From Fraud Detection to Transaction History: Pattern analysis queries, Internal, TLS, Read-only access
+- From Reporting Service to Regulatory Authority: Compliance reports, Confidential, SFTP, PGP encryption

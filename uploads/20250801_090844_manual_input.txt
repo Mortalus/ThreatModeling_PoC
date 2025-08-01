@@ -1,0 +1,11 @@
+System: Healthcare Management System, Version 1.0, Healthcare Industry
+External Entities: Patient (P), Healthcare Provider (HP), Insurance Company (IC)
+Assets: Patient Records Database (DB_PR), Medical Images Store (IMG), Audit Logs (LOGS)
+Processes: Patient Portal (PP), Clinical System (CS), Billing System (BS), Integration Engine (IE)
+Trust Boundaries: Public Internet to Application Layer, Application to Data Layer, External Partners
+Data Flows:
+- From Patient to Patient Portal: Health information and appointment requests, PHI, HTTPS, SAML SSO
+- From Healthcare Provider to Clinical System: Medical records and prescriptions, PHI, HTTPS, Smart Card Auth
+- From Clinical System to Patient Records Database: Patient data storage, PHI, TLS, Encrypted at rest
+- From Integration Engine to Insurance Company: Claims data, PHI/PII, HTTPS, OAuth 2.0
+- From All Systems to Audit Logs: Compliance logging, Internal, TLS, Service Account

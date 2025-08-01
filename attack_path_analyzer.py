@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# attack_path_analyzer.py
-
 """
-Attack Path Analysis Module for Threat Modeling Pipeline
+Simplified Attack Path Analysis Module for Threat Modeling Pipeline
 Analyzes refined threats to identify and score potential attack chains
+
+Compatible version with minimal dependencies and improved error handling.
 """
 
 import os
@@ -12,80 +12,184 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Set, Optional, Tuple, Any, Union
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from collections import defaultdict, deque
-import networkx as nx
-from pydantic import BaseModel, Field, field_validator
-from enum import Enum
 import hashlib
-
-from dotenv import load_dotenv
-from openai import OpenAI
-import ollama
+import sys
+import re
 
 # Load environment variables
+from dotenv import load_dotenv
 load_dotenv()
 
-# Enums for better type safety
-class ThreatLikelihood(str, Enum):
-    LOW = "Low"
-    MEDIUM = "Medium"
-    HIGH = "High"
+def get_config():
+    """Get configuration from environment with defaults."""
+    return {
+        'input_dir': os.getenv('INPUT_DIR', './output'),
+        'refined_threats_path': os.getenv('REFINED_THREATS_PATH', ''),
+        'dfd_path': os.getenv('DFD_PATH', ''),
+        'attack_paths_output': os.getenv('ATTACK_PATHS_OUTPUT', ''),
+        'llm_provider': os.getenv('LLM_PROVIDER', 'scaleway'),
+        'llm_model': os.getenv('LLM_MODEL', 'llama-3.3-70b-instruct'),
+        'scw_api_url': os.getenv('SCW_API_URL', 'https://api.scaleway.ai/v1'),
+        'scw_secret_key': os.getenv('SCW_SECRET_KEY') or os.getenv('SCW_API_KEY'),
+        'max_path_length': int(os.getenv('MAX_PATH_LENGTH', '5')),
+        'max_paths_to_analyze': int(os.getenv('MAX_PATHS_TO_ANALYZE', '20')),
+        'enable_llm_enrichment': os.getenv('ENABLE_LLM_ENRICHMENT', 'true').lower() == 'true',
+        'enable_vector_store': os.getenv('ENABLE_VECTOR_STORE', 'false').lower() == 'true',
+        'project_name': os.getenv('PROJECT_NAME', 'Unknown Project'),
+        'log_level': os.getenv('LOG_LEVEL', 'INFO'),
+        'output_dir': os.getenv('OUTPUT_DIR', './output')
+    }
 
-class ThreatImpact(str, Enum):
-    LOW = "Low"
-    MEDIUM = "Medium"
-    HIGH = "High"
-    CRITICAL = "Critical"
+# Get configuration
+config = get_config()
 
-class PathFeasibility(str, Enum):
-    THEORETICAL = "Theoretical"
-    REALISTIC = "Realistic"
-    HIGHLY_LIKELY = "Highly Likely"
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, config['log_level']),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-class AttackerProfile(str, Enum):
-    SCRIPT_KIDDIE = "Script Kiddie"
-    CYBERCRIMINAL = "Cybercriminal"
-    APT = "APT"
-    INSIDER = "Insider"
+# --- Progress Tracking Functions ---
+def write_progress(step: int, current: int, total: int, message: str, details: str = ""):
+    """Write progress information to a file that the frontend can read."""
+    try:
+        progress_data = {
+            'step': step,
+            'current': current,
+            'total': total,
+            'progress': round((current / total * 100) if total > 0 else 0, 1),
+            'message': message,
+            'details': details,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        progress_file = os.path.join(config['output_dir'], f'step_{step}_progress.json')
+        with open(progress_file, 'w') as f:
+            json.dump(progress_data, f, indent=2)
+            
+    except Exception as e:
+        logger.warning(f"Could not write progress: {e}")
 
-class TimeToCompromise(str, Enum):
-    HOURS = "Hours"
-    DAYS = "Days"
-    WEEKS = "Weeks"
-    MONTHS = "Months"
+def check_kill_signal(step: int) -> bool:
+    """Check if user requested to kill this step."""
+    try:
+        kill_file = os.path.join(config['output_dir'], f'step_{step}_kill.flag')
+        if os.path.exists(kill_file):
+            logger.info("Kill signal detected, stopping execution")
+            return True
+        return False
+    except:
+        return False
+
+# Simple graph implementation to replace NetworkX
+class SimpleGraph:
+    """Lightweight graph implementation."""
+    
+    def __init__(self):
+        self.nodes = {}
+        self.edges = defaultdict(list)
+        self.reverse_edges = defaultdict(list)
+    
+    def add_node(self, node, **attrs):
+        """Add a node with attributes."""
+        self.nodes[node] = attrs
+    
+    def add_edge(self, source, dest, **attrs):
+        """Add an edge with attributes."""
+        self.edges[source].append((dest, attrs))
+        self.reverse_edges[dest].append((source, attrs))
+    
+    def has_node(self, node):
+        """Check if node exists."""
+        return node in self.nodes
+    
+    def predecessors(self, node):
+        """Get predecessors of a node."""
+        return [src for src, _ in self.reverse_edges[node]]
+    
+    def successors(self, node):
+        """Get successors of a node."""
+        return [dest for dest, _ in self.edges[node]]
+    
+    def degree(self, node):
+        """Get degree of a node."""
+        return len(self.edges[node]) + len(self.reverse_edges[node])
+    
+    def number_of_nodes(self):
+        """Get number of nodes."""
+        return len(self.nodes)
+    
+    def number_of_edges(self):
+        """Get number of edges."""
+        return sum(len(edges) for edges in self.edges.values())
+    
+    def find_paths(self, start, end, max_length=5):
+        """Find all simple paths between start and end."""
+        if start not in self.nodes or end not in self.nodes:
+            return []
+        
+        paths = []
+        queue = deque([(start, [start])])
+        
+        while queue:
+            current, path = queue.popleft()
+            
+            if len(path) > max_length:
+                continue
+            
+            if current == end and len(path) > 1:
+                paths.append(path)
+                continue
+            
+            for neighbor, _ in self.edges[current]:
+                if neighbor not in path:  # Avoid cycles
+                    new_path = path + [neighbor]
+                    queue.append((neighbor, new_path))
+        
+        return paths
+    
+    def shortest_path(self, start, end):
+        """Find shortest path using BFS."""
+        if start not in self.nodes or end not in self.nodes:
+            return None
+        
+        queue = deque([(start, [start])])
+        visited = {start}
+        
+        while queue:
+            current, path = queue.popleft()
+            
+            if current == end:
+                return path
+            
+            for neighbor, _ in self.edges[current]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + [neighbor]))
+        
+        return None
 
 # Configuration
 @dataclass
 class Config:
     """Configuration for attack path analysis."""
-    # Paths
-    input_dir: str = field(default_factory=lambda: os.getenv("INPUT_DIR", "./output"))
-    refined_threats_path: str = field(default="")
-    dfd_path: str = field(default="")
-    attack_paths_output: str = field(default="")
-    
-    # LLM Configuration
-    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "scaleway").lower())
-    llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "llama-3.3-70b-instruct"))
-    scaleway_api_key: str = field(default_factory=lambda: os.getenv("SCALEWAY_API_KEY", os.getenv("SCW_API_KEY", "")))
-    scaleway_project_id: str = field(default_factory=lambda: os.getenv("SCALEWAY_PROJECT_ID", "4a8fd76b-8606-46e6-afe6-617ce8eeb948"))
-    
-    # Analysis parameters
-    max_path_length: int = field(default_factory=lambda: int(os.getenv("MAX_PATH_LENGTH", "5")))
-    min_path_likelihood: str = field(default_factory=lambda: os.getenv("MIN_PATH_LIKELIHOOD", "Low"))
-    focus_on_critical_assets: bool = field(default_factory=lambda: os.getenv("FOCUS_CRITICAL_ASSETS", "true").lower() == "true")
-    max_paths_to_analyze: int = field(default_factory=lambda: int(os.getenv("MAX_PATHS_TO_ANALYZE", "20")))
-    enable_llm_enrichment: bool = field(default_factory=lambda: os.getenv("ENABLE_LLM_ENRICHMENT", "true").lower() == "true")
-    
-    # Vector store configuration
-    enable_vector_store: bool = field(default_factory=lambda: os.getenv("ENABLE_VECTOR_STORE", "true").lower() == "true")
-    qdrant_url: str = field(default_factory=lambda: os.getenv("QDRANT_URL", "http://homebase:6333"))
-    qdrant_api_key: Optional[str] = field(default_factory=lambda: os.getenv("QDRANT_API_KEY"))
-    project_name: str = field(default_factory=lambda: os.getenv("PROJECT_NAME", "Unknown Project"))
-    project_industry: str = field(default_factory=lambda: os.getenv("PROJECT_INDUSTRY", "General"))
-    project_tech_stack: str = field(default_factory=lambda: os.getenv("PROJECT_TECH_STACK", ""))
-    project_compliance: str = field(default_factory=lambda: os.getenv("PROJECT_COMPLIANCE", ""))
+    input_dir: str = config['input_dir']
+    refined_threats_path: str = config['refined_threats_path']
+    dfd_path: str = config['dfd_path']
+    attack_paths_output: str = config['attack_paths_output']
+    llm_provider: str = config['llm_provider']
+    llm_model: str = config['llm_model']
+    scw_api_url: str = config['scw_api_url']
+    scw_secret_key: str = config['scw_secret_key']
+    max_path_length: int = config['max_path_length']
+    max_paths_to_analyze: int = config['max_paths_to_analyze']
+    enable_llm_enrichment: bool = config['enable_llm_enrichment']
+    enable_vector_store: bool = config['enable_vector_store']
+    project_name: str = config['project_name']
+    output_dir: str = config['output_dir']
     
     def __post_init__(self):
         """Initialize derived paths if not set."""
@@ -95,189 +199,98 @@ class Config:
             self.dfd_path = os.path.join(self.input_dir, "dfd_components.json")
         if not self.attack_paths_output:
             self.attack_paths_output = os.path.join(self.input_dir, "attack_paths.json")
-        
-        # Validate paths exist
-        if not os.path.exists(self.refined_threats_path):
-            raise FileNotFoundError(f"Refined threats file not found: {self.refined_threats_path}")
-        if not os.path.exists(self.dfd_path):
-            raise FileNotFoundError(f"DFD file not found: {self.dfd_path}")
 
-# Pydantic Models with validation
-class AttackStep(BaseModel):
+# Simple data classes (replacing Pydantic for compatibility)
+@dataclass
+class AttackStep:
     step_number: int
     component: str
     threat_id: str
     threat_description: str
     stride_category: str
-    technique_id: Optional[str] = Field(None, description="MITRE ATT&CK technique")
-    prerequisites: List[str] = Field(default_factory=list)
-    enables: List[str] = Field(default_factory=list)
-    required_access: Optional[str] = Field(None, description="Required access level")
-    detection_difficulty: Optional[str] = Field(None, description="How hard to detect: Easy/Medium/Hard")
-    
-    @field_validator('stride_category')
-    @classmethod
-    def validate_stride(cls, v):
-        valid_categories = ['S', 'T', 'R', 'I', 'D', 'E']
-        if v not in valid_categories:
-            raise ValueError(f"Invalid STRIDE category: {v}")
-        return v
+    technique_id: Optional[str] = None
+    prerequisites: List[str] = field(default_factory=list)
+    enables: List[str] = field(default_factory=list)
+    required_access: Optional[str] = None
+    detection_difficulty: Optional[str] = None
 
-class AttackPath(BaseModel):
+@dataclass
+class AttackPath:
     path_id: str
     scenario_name: str
     entry_point: str
     target_asset: str
     path_steps: List[AttackStep]
     total_steps: int
-    combined_likelihood: ThreatLikelihood
-    combined_impact: ThreatImpact
-    path_feasibility: PathFeasibility
-    attacker_profile: AttackerProfile
-    time_to_compromise: TimeToCompromise
-    key_chokepoints: List[str] = Field(description="Critical controls that would block this path")
-    detection_opportunities: List[str] = Field(default_factory=list, description="Where detection is possible")
-    required_resources: List[str] = Field(default_factory=list, description="Attacker resources needed")
-    path_complexity: str = Field(default="Medium", description="Low/Medium/High complexity")
-    
-    @field_validator('path_id')
-    @classmethod
-    def validate_path_id(cls, v):
-        if not v.startswith('AP_'):
-            raise ValueError("Path ID must start with 'AP_'")
-        return v
+    combined_likelihood: str
+    combined_impact: str
+    path_feasibility: str = "Realistic"
+    attacker_profile: str = "Cybercriminal"
+    time_to_compromise: str = "Days"
+    key_chokepoints: List[str] = field(default_factory=list)
+    detection_opportunities: List[str] = field(default_factory=list)
+    required_resources: List[str] = field(default_factory=list)
+    path_complexity: str = "Medium"
 
-class ThreatRelationship(BaseModel):
-    from_threat: str
-    to_threat: str
-    relationship_type: str
-    explanation: str
-    required_capability: str
-    
-    @field_validator('relationship_type')
-    @classmethod
-    def validate_relationship_type(cls, v):
-        valid_types = ['enables', 'requires', 'blocks', 'amplifies']
-        if v not in valid_types:
-            raise ValueError(f"Invalid relationship type: {v}")
-        return v
-
-class AttackPathAnalysis(BaseModel):
+@dataclass
+class AttackPathAnalysis:
     attack_paths: List[AttackPath]
     critical_scenarios: List[str]
     defense_priorities: List[Dict[str, Any]]
-    threat_coverage: Dict[str, Any] = Field(default_factory=dict, description="How many threats are covered")
-    vector_store_insights: Optional[Dict[str, Any]] = Field(default=None, description="Insights from vector store")
-    metadata: Dict[str, Any]
+    threat_coverage: Dict[str, Any] = field(default_factory=dict)
+    vector_store_insights: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
-# Enhanced LLM Client with retry logic
+# Simplified LLM Client
 class LLMClient:
-    """LLM client with improved error handling and retry logic."""
+    """Simplified LLM client with basic error handling."""
+    
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(f"{__name__}.LLMClient")
-        self.client = self._init_client()
-        self.max_retries = 3
+        self.client = None
+        self._init_client()
     
     def _init_client(self):
-        if self.config.llm_provider == "scaleway":
-            if not self.config.scaleway_api_key:
-                raise ValueError("Scaleway API key required")
-            return OpenAI(
-                base_url=f"https://api.scaleway.ai/{self.config.scaleway_project_id}/v1",
-                api_key=self.config.scaleway_api_key
-            )
-        return None
-    
-    def _call_llm_with_retry(self, prompt: str, temperature: float = 0.3) -> str:
-        """Call LLM with retry logic."""
-        for attempt in range(self.max_retries):
-            try:
-                if self.config.llm_provider == "scaleway":
-                    response = self.client.chat.completions.create(
-                        model=self.config.llm_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        response_format={"type": "json_object"},
-                        temperature=temperature,
-                        max_tokens=2000
-                    )
-                    return response.choices[0].message.content
-                else:
-                    response = ollama.generate(
-                        model=self.config.llm_model,
-                        prompt=prompt + "\n\nOutput only valid JSON.",
-                        options={"temperature": temperature}
-                    )
-                    return response['response']
-            except Exception as e:
-                self.logger.warning(f"LLM call failed (attempt {attempt + 1}): {e}")
-                if attempt == self.max_retries - 1:
-                    raise
-        return "{}"
-    
-    def analyze_threat_relationships(self, threats: List[Dict], dfd_data: Dict) -> List[ThreatRelationship]:
-        """Use LLM to identify threat relationships and dependencies."""
-        prompt = f"""You are a cybersecurity expert analyzing threat relationships for attack path modeling.
-
-Given these threats and system components, identify:
-1. Which threats could enable other threats (prerequisite relationships)
-2. Natural attack progression between components
-3. Required attacker capabilities for each progression
-
-System Architecture:
-{json.dumps(dfd_data, indent=2)}
-
-Identified Threats (showing first 20):
-{json.dumps(threats[:20], indent=2)}
-
-For each meaningful threat relationship, output a JSON object:
-{{
-    "relationships": [
-        {{
-            "from_threat": "threat_id_1",
-            "to_threat": "threat_id_2",
-            "relationship_type": "enables|requires|blocks|amplifies",
-            "explanation": "why this relationship exists",
-            "required_capability": "what attacker needs"
-        }}
-    ]
-}}
-
-Focus on realistic attack progressions that would occur in real-world scenarios.
-Consider:
-- Initial access threats that enable lateral movement
-- Privilege escalation enabling data access
-- Information disclosure enabling further attacks
-- Defense evasion techniques enabling persistence"""
-
+        """Initialize the appropriate LLM client."""
         try:
-            response = self._call_llm_with_retry(prompt, temperature=0.3)
-            data = json.loads(response)
-            relationships = []
-            for rel in data.get('relationships', []):
+            if self.config.llm_provider == "scaleway" and self.config.scw_secret_key:
+                from openai import OpenAI
+                self.client = OpenAI(
+                    base_url=self.config.scw_api_url,
+                    api_key=self.config.scw_secret_key
+                )
+                self.logger.info("Scaleway client initialized")
+            elif self.config.llm_provider == "ollama":
                 try:
-                    relationships.append(ThreatRelationship(**rel))
-                except Exception as e:
-                    self.logger.warning(f"Invalid relationship data: {e}")
-            return relationships
+                    import ollama
+                    self.client = ollama
+                    self.logger.info("Ollama client initialized")
+                except ImportError:
+                    self.logger.warning("Ollama not available")
+            else:
+                self.logger.warning("No valid LLM configuration found")
         except Exception as e:
-            self.logger.error(f"Failed to analyze threat relationships: {e}")
-            return []
+            self.logger.warning(f"Failed to initialize LLM client: {e}")
     
-    def analyze_attack_scenario(self, path: List[Dict], dfd_data: Dict) -> Dict[str, Any]:
+    def analyze_attack_scenario(self, path_steps: List[Dict], dfd_data: Dict) -> Dict[str, Any]:
         """Analyze a specific attack path for feasibility and details."""
+        if not self.client:
+            return self._get_default_analysis()
+        
         prompt = f"""You are a cybersecurity expert evaluating an attack path.
 
-Attack Path:
-{json.dumps(path, indent=2)}
+Attack Path Steps:
+{json.dumps(path_steps, indent=2)}
 
 System Context:
+- Project: {dfd_data.get('project_name', 'Unknown')}
 - Industry: {dfd_data.get('industry_context', 'General')}
 - Key Assets: {', '.join(dfd_data.get('assets', []))}
 
-Analyze this attack path and provide a realistic assessment:
+Analyze this attack path and provide a realistic assessment in JSON format:
 {{
-    "scenario_name": "descriptive name for this attack (e.g., 'Credential Theft to Database Breach')",
+    "scenario_name": "descriptive name for this attack",
     "attacker_profile": "Script Kiddie|Cybercriminal|APT|Insider",
     "path_feasibility": "Theoretical|Realistic|Highly Likely",
     "time_to_compromise": "Hours|Days|Weeks|Months",
@@ -285,43 +298,74 @@ Analyze this attack path and provide a realistic assessment:
     "key_chokepoints": ["specific defensive controls that would stop this"],
     "detection_opportunities": ["specific detection points in the attack chain"],
     "required_resources": ["tools, skills, or resources the attacker needs"],
-    "similar_incidents": ["real-world examples if applicable"],
     "path_complexity": "Low|Medium|High",
-    "expert_assessment": "paragraph explaining why this attack path matters"
+    "expert_assessment": "brief explanation of why this attack path matters"
 }}
 
-Consider real-world factors like:
-- Required attacker sophistication
-- Common defensive controls
-- Detection capabilities
-- Time and resource investment"""
+Consider real-world factors like required attacker sophistication, common defensive controls, and detection capabilities."""
 
         try:
-            response = self._call_llm_with_retry(prompt, temperature=0.4)
-            return json.loads(response)
+            if self.config.llm_provider == "scaleway":
+                response = self.client.chat.completions.create(
+                    model=self.config.llm_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.3,
+                    max_tokens=1000
+                )
+                return json.loads(response.choices[0].message.content)
+            elif self.config.llm_provider == "ollama":
+                response = self.client.generate(
+                    model=self.config.llm_model,
+                    prompt=prompt + "\n\nOutput only valid JSON.",
+                    options={"temperature": 0.3}
+                )
+                return json.loads(response['response'])
         except Exception as e:
-            self.logger.error(f"Failed to analyze attack scenario: {e}")
-            return {}
+            self.logger.warning(f"LLM analysis failed: {e}")
+            return self._get_default_analysis()
+    
+    def _get_default_analysis(self) -> Dict[str, Any]:
+        """Get default analysis when LLM is unavailable."""
+        return {
+            "scenario_name": "Multi-step Attack Chain",
+            "attacker_profile": "Cybercriminal",
+            "path_feasibility": "Realistic",
+            "time_to_compromise": "Days",
+            "combined_likelihood": "Medium",
+            "key_chokepoints": ["Multi-factor authentication", "Network segmentation"],
+            "detection_opportunities": ["Authentication logs", "Network monitoring"],
+            "required_resources": ["Basic hacking tools", "Network access"],
+            "path_complexity": "Medium",
+            "expert_assessment": "Standard multi-step attack requiring moderate skills"
+        }
 
-# Enhanced Attack Path Analyzer
+# Main Attack Path Analyzer
 class AttackPathAnalyzer:
     def __init__(self, config: Config):
         self.config = config
         self.logger = logging.getLogger(f"{__name__}.AttackPathAnalyzer")
         self.llm = LLMClient(config) if config.enable_llm_enrichment else None
-        self.graph = nx.DiGraph()
+        self.graph = SimpleGraph()
         self.threat_map = {}
         self.component_threats = defaultdict(list)
-        self.threat_graph = nx.DiGraph()
         
     def load_data(self) -> Tuple[List[Dict], Dict]:
         """Load refined threats and DFD data with validation."""
         try:
-            with open(self.config.refined_threats_path, 'r') as f:
+            # Load threats
+            self.logger.info(f"Loading threats from: {self.config.refined_threats_path}")
+            write_progress(5, 5, 100, "Loading data", "Reading threat files")
+            
+            with open(self.config.refined_threats_path, 'r', encoding='utf-8') as f:
                 threats_data = json.load(f)
             threats = threats_data.get('threats', [])
             
-            with open(self.config.dfd_path, 'r') as f:
+            # Load DFD data
+            self.logger.info(f"Loading DFD from: {self.config.dfd_path}")
+            write_progress(5, 10, 100, "Loading data", "Reading DFD components")
+            
+            with open(self.config.dfd_path, 'r', encoding='utf-8') as f:
                 dfd_data = json.load(f)
                 
             # Handle nested DFD structure
@@ -335,8 +379,13 @@ class AttackPathAnalyzer:
                        dfd_data.get('assets')]):
                 raise ValueError("No components found in DFD file")
                 
+            self.logger.info(f"Loaded {len(threats)} threats and DFD with {len(dfd_data.get('data_flows', []))} flows")
+            write_progress(5, 15, 100, "Data loaded", f"Found {len(threats)} threats")
             return threats, dfd_data
             
+        except FileNotFoundError as e:
+            self.logger.error(f"Required file not found: {e}")
+            raise
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON in input files: {e}")
             raise
@@ -344,9 +393,11 @@ class AttackPathAnalyzer:
             self.logger.error(f"Failed to load data: {e}")
             raise
     
-    def build_component_graph(self, dfd_data: Dict) -> nx.DiGraph():
+    def build_component_graph(self, dfd_data: Dict) -> SimpleGraph:
         """Build a directed graph of system components from DFD."""
-        G = nx.DiGraph()
+        write_progress(5, 20, 100, "Building graph", "Creating component relationships")
+        
+        G = SimpleGraph()
         
         # Track all components for validation
         all_components = set()
@@ -370,7 +421,7 @@ class AttackPathAnalyzer:
                       trust_level='trusted')
             all_components.add(asset)
             
-        # Add edges from data flows with enhanced metadata
+        # Add edges from data flows
         for flow in dfd_data.get('data_flows', []):
             if isinstance(flow, dict) and 'source' in flow and 'destination' in flow:
                 source = flow['source']
@@ -382,22 +433,24 @@ class AttackPathAnalyzer:
                         source, dest,
                         data_classification=flow.get('data_classification', 'Unknown'),
                         protocol=flow.get('protocol', 'Unknown'),
-                        authentication=flow.get('authentication', 'Unknown'),
-                        encryption=flow.get('encryption', False)
+                        authentication=flow.get('authentication_mechanism', 'Unknown')
                     )
                     
                     # Add reverse edge for bidirectional communication
-                    if flow.get('bidirectional', True):
-                        G.add_edge(dest, source,
-                                 data_classification=flow.get('data_classification', 'Unknown'),
-                                 protocol=flow.get('protocol', 'Unknown'))
+                    G.add_edge(dest, source,
+                             data_classification=flow.get('data_classification', 'Unknown'),
+                             protocol=flow.get('protocol', 'Unknown'))
                 else:
                     self.logger.warning(f"Skipping flow from {source} to {dest} - component not found")
                     
+        self.logger.info(f"Built graph with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges")
+        write_progress(5, 25, 100, "Graph built", f"{G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
         return G
     
     def map_threats_to_components(self, threats: List[Dict]) -> Dict[str, List[Dict]]:
-        """Map threats to their components with improved extraction."""
+        """Map threats to their components."""
+        write_progress(5, 30, 100, "Mapping threats", "Associating threats with components")
+        
         component_mapping = defaultdict(list)
         
         for i, threat in enumerate(threats):
@@ -431,37 +484,19 @@ class AttackPathAnalyzer:
             
         # Also check threat description for component mentions
         description = threat.get('threat_description', '')
-        for node in self.graph.nodes():
+        for node in self.graph.nodes:
             if node in description and node not in components:
                 components.append(node)
                 
         return components
     
-    def build_threat_graph(self, threats: List[Dict], relationships: List[ThreatRelationship]) -> nx.DiGraph():
-        """Build a graph of threat relationships."""
-        G = nx.DiGraph()
-        
-        # Add all threats as nodes
-        for threat in threats:
-            G.add_node(threat['threat_id'], 
-                      threat_data=threat,
-                      stride=threat.get('stride_category', 'U'))
-        
-        # Add relationships as edges
-        for rel in relationships:
-            if rel.from_threat in G and rel.to_threat in G:
-                G.add_edge(rel.from_threat, rel.to_threat,
-                         relationship_type=rel.relationship_type,
-                         explanation=rel.explanation,
-                         required_capability=rel.required_capability)
-                         
-        return G
-    
     def identify_entry_points(self) -> List[str]:
         """Identify potential entry points with scoring."""
+        write_progress(5, 35, 100, "Finding entry points", "Identifying attack surface")
+        
         entry_points = []
         
-        for node in self.graph.nodes():
+        for node in self.graph.nodes:
             node_data = self.graph.nodes[node]
             score = 0
             
@@ -490,7 +525,9 @@ class AttackPathAnalyzer:
         return [ep[0] for ep in entry_points]
     
     def identify_critical_assets(self, dfd_data: Dict) -> List[str]:
-        """Identify high-value targets with improved ranking."""
+        """Identify high-value targets."""
+        write_progress(5, 40, 100, "Finding targets", "Identifying critical assets")
+        
         asset_scores = defaultdict(int)
         
         # All data stores are critical
@@ -512,64 +549,61 @@ class AttackPathAnalyzer:
                 if 'source' in flow:
                     asset_scores[flow['source']] += score // 2
                     
-        # Central components (high betweenness centrality)
-        if self.graph.number_of_nodes() > 0:
-            centrality = nx.betweenness_centrality(self.graph)
-            for node, cent in centrality.items():
-                if cent > 0.1:  # Threshold for central nodes
-                    asset_scores[node] += int(cent * 10)
-                    
         # Sort by score and return top assets
         sorted_assets = sorted(asset_scores.items(), key=lambda x: x[1], reverse=True)
         return [asset[0] for asset in sorted_assets if asset[1] > 5]
     
     def find_attack_paths(self, entry_points: List[str], targets: List[str]) -> List[List[str]]:
-        """Find potential attack paths with optimization."""
+        """Find potential attack paths."""
         all_paths = []
         path_set = set()  # To avoid duplicates
         
         self.logger.info(f"Finding paths from {len(entry_points)} entry points to {len(targets)} targets")
+        write_progress(5, 45, 100, "Finding paths", f"Analyzing {len(entry_points)} entry points")
         
-        for entry in entry_points[:10]:  # Limit entry points for performance
-            for target in targets[:10]:  # Limit targets for performance
+        total_combinations = min(len(entry_points), 5) * min(len(targets), 5)
+        current_combination = 0
+        
+        for entry in entry_points[:5]:  # Limit entry points for performance
+            for target in targets[:5]:  # Limit targets for performance
+                if check_kill_signal(5):
+                    return all_paths
+                    
+                current_combination += 1
+                progress = 45 + int((current_combination / total_combinations) * 25)
+                write_progress(5, progress, 100, 
+                             f"Finding paths ({current_combination}/{total_combinations})", 
+                             f"{entry} → {target}")
+                
                 if entry != target and self.graph.has_node(entry) and self.graph.has_node(target):
                     try:
-                        # Find shortest paths first (most likely)
-                        try:
-                            shortest = nx.shortest_path(self.graph, entry, target)
+                        # Find shortest path first
+                        shortest = self.graph.shortest_path(entry, target)
+                        if shortest and len(shortest) <= self.config.max_path_length:
                             path_tuple = tuple(shortest)
-                            if path_tuple not in path_set and len(shortest) <= self.config.max_path_length:
+                            if path_tuple not in path_set:
                                 all_paths.append(shortest)
                                 path_set.add(path_tuple)
-                        except nx.NetworkXNoPath:
-                            pass
                         
-                        # Then find alternative paths
-                        paths = nx.all_simple_paths(
-                            self.graph, entry, target, 
-                            cutoff=self.config.max_path_length
-                        )
+                        # Find alternative paths
+                        paths = self.graph.find_paths(entry, target, self.config.max_path_length)
                         
-                        # Limit paths per source-target pair
-                        path_count = 0
-                        for path in paths:
+                        # Add unique paths
+                        for path in paths[:3]:  # Max 3 paths per pair
                             path_tuple = tuple(path)
                             if path_tuple not in path_set:
                                 all_paths.append(path)
                                 path_set.add(path_tuple)
-                                path_count += 1
-                                if path_count >= 3:  # Max 3 paths per pair
-                                    break
-                                    
-                    except nx.NetworkXError as e:
+                                
+                    except Exception as e:
                         self.logger.debug(f"No path from {entry} to {target}: {e}")
                         
         self.logger.info(f"Found {len(all_paths)} unique paths")
+        write_progress(5, 70, 100, "Paths found", f"Discovered {len(all_paths)} attack paths")
         return all_paths
     
-    def build_attack_path_details(self, path: List[str], 
-                                 threat_chains: Dict[str, List[str]]) -> Optional[AttackPath]:
-        """Build detailed attack path with enhanced threat selection."""
+    def build_attack_path_details(self, path: List[str]) -> Optional[AttackPath]:
+        """Build detailed attack path."""
         path_steps = []
         path_threats = []
         used_threat_ids = set()
@@ -583,35 +617,17 @@ class AttackPathAnalyzer:
                 # Select the most relevant threat
                 relevant_threat = self.select_relevant_threat(
                     component_threats, 
-                    previous_threats=path_threats,
-                    threat_chains=threat_chains,
                     step_position=i,
                     total_steps=len(path)
                 )
                 
                 if relevant_threat:
-                    # Determine prerequisites
-                    prerequisites = []
-                    if path_threats:
-                        # Last threat is a prerequisite
-                        prerequisites.append(path_threats[-1]['threat_id'])
-                        # Check for other enabling threats
-                        for prev_threat in path_threats:
-                            if relevant_threat['threat_id'] in threat_chains.get(prev_threat['threat_id'], []):
-                                prerequisites.append(prev_threat['threat_id'])
-                    
-                    # Determine what this enables
-                    enables = threat_chains.get(relevant_threat['threat_id'], [])
-                    
                     step = AttackStep(
                         step_number=i + 1,
                         component=component,
                         threat_id=relevant_threat['threat_id'],
                         threat_description=relevant_threat['threat_description'],
                         stride_category=relevant_threat['stride_category'],
-                        technique_id=relevant_threat.get('mitre_attack_id'),
-                        prerequisites=list(set(prerequisites)),
-                        enables=enables[:3],  # Limit for readability
                         required_access=self._determine_required_access(i, len(path)),
                         detection_difficulty=self._assess_detection_difficulty(relevant_threat)
                     )
@@ -639,19 +655,10 @@ class AttackPathAnalyzer:
             path_steps=path_steps,
             total_steps=len(path_steps),
             combined_likelihood=combined_likelihood,
-            combined_impact=combined_impact,
-            path_feasibility=PathFeasibility.REALISTIC,
-            attacker_profile=AttackerProfile.CYBERCRIMINAL,
-            time_to_compromise=TimeToCompromise.DAYS,
-            key_chokepoints=[],
-            detection_opportunities=[],
-            required_resources=[],
-            path_complexity="Medium"
+            combined_impact=combined_impact
         )
     
-    def select_relevant_threat(self, threats: List[Dict], previous_threats: List[Dict], 
-                             threat_chains: Dict[str, List[str]], step_position: int,
-                             total_steps: int) -> Optional[Dict]:
+    def select_relevant_threat(self, threats: List[Dict], step_position: int, total_steps: int) -> Optional[Dict]:
         """Select the most relevant threat for the current attack step."""
         if not threats:
             return None
@@ -665,7 +672,7 @@ class AttackPathAnalyzer:
             # Position-based scoring
             if step_position == 0:
                 # First step - prefer authentication/access threats
-                if threat['stride_category'] in ['S', 'A']:  # Spoofing or Authentication
+                if threat['stride_category'] in ['S']:  # Spoofing
                     score += 10
                 if 'authentication' in threat['threat_description'].lower():
                     score += 5
@@ -677,12 +684,6 @@ class AttackPathAnalyzer:
                 # Middle steps - prefer elevation/lateral movement
                 if threat['stride_category'] in ['E', 'T']:  # Elevation, Tampering
                     score += 5
-                    
-            # Chain-based scoring
-            if previous_threats:
-                last_threat_id = previous_threats[-1]['threat_id']
-                if threat['threat_id'] in threat_chains.get(last_threat_id, []):
-                    score += 15  # Strong preference for chained threats
                     
             # Impact-based scoring
             impact_scores = {'Critical': 8, 'High': 6, 'Medium': 4, 'Low': 2}
@@ -722,70 +723,63 @@ class AttackPathAnalyzer:
         else:
             return "Medium"
     
-    def _calculate_combined_impact(self, threats: List[Dict]) -> ThreatImpact:
+    def _calculate_combined_impact(self, threats: List[Dict]) -> str:
         """Calculate the combined impact of a threat chain."""
         if not threats:
-            return ThreatImpact.LOW
+            return "Low"
             
-        impact_values = {
-            ThreatImpact.CRITICAL: 4,
-            ThreatImpact.HIGH: 3,
-            ThreatImpact.MEDIUM: 2,
-            ThreatImpact.LOW: 1
-        }
+        impact_values = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
         
         # Get the maximum impact
-        max_impact = ThreatImpact.LOW
+        max_impact = "Low"
         max_value = 0
         
         for threat in threats:
             impact_str = threat.get('impact', 'Low')
-            try:
-                impact = ThreatImpact(impact_str)
-                if impact_values[impact] > max_value:
-                    max_value = impact_values[impact]
-                    max_impact = impact
-            except ValueError:
-                continue
+            value = impact_values.get(impact_str, 1)
+            if value > max_value:
+                max_value = value
+                max_impact = impact_str
                 
         return max_impact
     
-    def _calculate_combined_likelihood(self, threats: List[Dict]) -> ThreatLikelihood:
+    def _calculate_combined_likelihood(self, threats: List[Dict]) -> str:
         """Calculate the combined likelihood of a threat chain."""
         if not threats:
-            return ThreatLikelihood.LOW
+            return "Low"
             
-        likelihood_values = {
-            ThreatLikelihood.HIGH: 3,
-            ThreatLikelihood.MEDIUM: 2,
-            ThreatLikelihood.LOW: 1
-        }
+        likelihood_values = {"High": 3, "Medium": 2, "Low": 1}
         
         # Use the minimum likelihood (weakest link)
-        min_likelihood = ThreatLikelihood.HIGH
+        min_likelihood = "High"
         min_value = 3
         
         for threat in threats:
             likelihood_str = threat.get('likelihood', 'Medium')
-            try:
-                likelihood = ThreatLikelihood(likelihood_str)
-                if likelihood_values[likelihood] < min_value:
-                    min_value = likelihood_values[likelihood]
-                    min_likelihood = likelihood
-            except ValueError:
-                continue
+            value = likelihood_values.get(likelihood_str, 2)
+            if value < min_value:
+                min_value = value
+                min_likelihood = likelihood_str
                 
         return min_likelihood
     
     def enrich_attack_paths(self, paths: List[AttackPath], dfd_data: Dict) -> List[AttackPath]:
         """Use LLM to enrich attack paths with realistic assessments."""
-        if not self.llm:
-            self.logger.info("LLM enrichment disabled")
+        if not self.llm or not self.llm.client:
+            self.logger.info("LLM enrichment disabled or unavailable")
             return paths
             
         enriched_paths = []
         
         for i, path in enumerate(paths[:self.config.max_paths_to_analyze]):
+            if check_kill_signal(5):
+                return enriched_paths
+                
+            progress = 75 + int((i / min(len(paths), self.config.max_paths_to_analyze)) * 15)
+            write_progress(5, progress, 100, 
+                         f"Enriching path {i+1}/{min(len(paths), self.config.max_paths_to_analyze)}", 
+                         f"Analyzing: {path.scenario_name}")
+            
             self.logger.info(f"Enriching path {i+1}/{min(len(paths), self.config.max_paths_to_analyze)}")
             
             try:
@@ -806,28 +800,10 @@ class AttackPathAnalyzer:
                 if analysis:
                     # Update path with LLM insights
                     path.scenario_name = analysis.get('scenario_name', path.scenario_name)
-                    
-                    # Safe enum conversions
-                    try:
-                        path.attacker_profile = AttackerProfile(analysis.get('attacker_profile', 'Cybercriminal'))
-                    except ValueError:
-                        pass
-                        
-                    try:
-                        path.path_feasibility = PathFeasibility(analysis.get('path_feasibility', 'Realistic'))
-                    except ValueError:
-                        pass
-                        
-                    try:
-                        path.time_to_compromise = TimeToCompromise(analysis.get('time_to_compromise', 'Days'))
-                    except ValueError:
-                        pass
-                        
-                    try:
-                        path.combined_likelihood = ThreatLikelihood(analysis.get('combined_likelihood', 'Medium'))
-                    except ValueError:
-                        pass
-                    
+                    path.attacker_profile = analysis.get('attacker_profile', 'Cybercriminal')
+                    path.path_feasibility = analysis.get('path_feasibility', 'Realistic')
+                    path.time_to_compromise = analysis.get('time_to_compromise', 'Days')
+                    path.combined_likelihood = analysis.get('combined_likelihood', path.combined_likelihood)
                     path.key_chokepoints = analysis.get('key_chokepoints', [])[:5]
                     path.detection_opportunities = analysis.get('detection_opportunities', [])[:5]
                     path.required_resources = analysis.get('required_resources', [])[:5]
@@ -836,7 +812,7 @@ class AttackPathAnalyzer:
                 enriched_paths.append(path)
                 
             except Exception as e:
-                self.logger.error(f"Failed to enrich path {path.path_id}: {e}")
+                self.logger.warning(f"Failed to enrich path {path.path_id}: {e}")
                 enriched_paths.append(path)  # Keep original
                 
         # Add remaining paths without enrichment
@@ -846,37 +822,25 @@ class AttackPathAnalyzer:
     
     def generate_defense_priorities(self, paths: List[AttackPath]) -> List[Dict[str, Any]]:
         """Generate prioritized defensive recommendations."""
+        write_progress(5, 92, 100, "Generating recommendations", "Analyzing defense priorities")
+        
         # Track statistics
         component_criticality = defaultdict(int)
         chokepoint_effectiveness = defaultdict(int)
-        technique_frequency = defaultdict(int)
         detection_gaps = defaultdict(int)
         
         # Analyze paths
         for path in paths:
             # Weight by feasibility and impact
-            weight_map = {
-                PathFeasibility.HIGHLY_LIKELY: 3,
-                PathFeasibility.REALISTIC: 2,
-                PathFeasibility.THEORETICAL: 1
-            }
+            weight_map = {"Highly Likely": 3, "Realistic": 2, "Theoretical": 1}
             weight = weight_map.get(path.path_feasibility, 1)
             
-            impact_weight = {
-                ThreatImpact.CRITICAL: 4,
-                ThreatImpact.HIGH: 3,
-                ThreatImpact.MEDIUM: 2,
-                ThreatImpact.LOW: 1
-            }
+            impact_weight = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
             weight *= impact_weight.get(path.combined_impact, 1)
             
             # Count component occurrences
             for step in path.path_steps:
                 component_criticality[step.component] += weight
-                
-                # Track MITRE techniques
-                if step.technique_id:
-                    technique_frequency[step.technique_id] += weight
                     
                 # Track detection gaps
                 if step.detection_difficulty == "Hard":
@@ -928,19 +892,6 @@ class AttackPathAnalyzer:
                 "category": "Detection"
             })
             
-        # MITRE technique coverage
-        top_techniques = sorted(technique_frequency.items(), 
-                              key=lambda x: x[1], reverse=True)[:3]
-        for technique, frequency in top_techniques:
-            priorities.append({
-                "type": "technique_mitigation",
-                "recommendation": f"Implement defenses for MITRE technique {technique}",
-                "impact": f"Technique used in {frequency} weighted attack steps",
-                "priority": "Medium",
-                "effort": "Medium",
-                "category": "Technique-specific Defense"
-            })
-            
         return priorities
     
     def calculate_threat_coverage(self, paths: List[AttackPath], all_threats: List[Dict]) -> Dict[str, int]:
@@ -962,8 +913,9 @@ class AttackPathAnalyzer:
         }
     
     def analyze(self) -> AttackPathAnalysis:
-        """Main analysis function with improved error handling."""
+        """Main analysis function."""
         self.logger.info("=== Starting Attack Path Analysis ===")
+        write_progress(5, 0, 100, "Starting analysis", "Initializing attack path analyzer")
         
         try:
             # Load data
@@ -972,29 +924,10 @@ class AttackPathAnalyzer:
             
             # Build component graph
             self.graph = self.build_component_graph(dfd_data)
-            self.logger.info(f"Built graph with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges")
             
             # Map threats to components
             component_mapping = self.map_threats_to_components(threats)
             self.logger.info(f"Mapped threats to components: {len(component_mapping)} components have threats")
-            
-            # Analyze threat relationships using LLM
-            threat_chains = {}
-            if self.config.enable_llm_enrichment and self.llm:
-                try:
-                    relationships = self.llm.analyze_threat_relationships(threats, dfd_data)
-                    self.threat_graph = self.build_threat_graph(threats, relationships)
-                    
-                    # Convert to simple chain format
-                    for rel in relationships:
-                        if rel.relationship_type in ['enables', 'amplifies']:
-                            if rel.from_threat not in threat_chains:
-                                threat_chains[rel.from_threat] = []
-                            threat_chains[rel.from_threat].append(rel.to_threat)
-                            
-                    self.logger.info(f"Identified {len(relationships)} threat relationships")
-                except Exception as e:
-                    self.logger.warning(f"Failed to analyze threat relationships: {e}")
             
             # Identify entry points and targets
             entry_points = self.identify_entry_points()
@@ -1002,7 +935,18 @@ class AttackPathAnalyzer:
             self.logger.info(f"Found {len(entry_points)} entry points and {len(targets)} critical assets")
             
             if not entry_points or not targets:
-                raise ValueError("No entry points or targets identified")
+                self.logger.warning("No entry points or targets identified")
+                write_progress(5, 100, 100, "Complete", "No attack paths found")
+                return AttackPathAnalysis(
+                    attack_paths=[],
+                    critical_scenarios=[],
+                    defense_priorities=[],
+                    threat_coverage={},
+                    metadata={
+                        "timestamp": datetime.now().isoformat(),
+                        "error": "No entry points or targets identified"
+                    }
+                )
             
             # Find attack paths
             raw_paths = self.find_attack_paths(entry_points, targets)
@@ -1010,8 +954,18 @@ class AttackPathAnalyzer:
             
             # Build detailed attack paths
             attack_paths = []
-            for path in raw_paths[:self.config.max_paths_to_analyze * 2]:  # Process more than we'll analyze
-                detailed_path = self.build_attack_path_details(path, threat_chains)
+            total_raw_paths = min(len(raw_paths), self.config.max_paths_to_analyze * 2)
+            
+            for i, path in enumerate(raw_paths[:total_raw_paths]):
+                if check_kill_signal(5):
+                    break
+                    
+                progress = 70 + int((i / total_raw_paths) * 5)
+                write_progress(5, progress, 100, 
+                             f"Building path {i+1}/{total_raw_paths}", 
+                             f"{path[0]} → {path[-1]}")
+                
+                detailed_path = self.build_attack_path_details(path)
                 if detailed_path:
                     attack_paths.append(detailed_path)
                     
@@ -1019,12 +973,12 @@ class AttackPathAnalyzer:
             
             if not attack_paths:
                 self.logger.warning("No valid attack paths found")
+                write_progress(5, 100, 100, "Complete", "No valid attack paths found")
                 return AttackPathAnalysis(
                     attack_paths=[],
                     critical_scenarios=[],
                     defense_priorities=[],
                     threat_coverage={},
-                    vector_store_insights=None,
                     metadata={
                         "timestamp": datetime.now().isoformat(),
                         "error": "No valid attack paths found"
@@ -1037,17 +991,8 @@ class AttackPathAnalyzer:
             
             # Sort by criticality
             def path_score(p):
-                feasibility_score = {
-                    PathFeasibility.HIGHLY_LIKELY: 3,
-                    PathFeasibility.REALISTIC: 2,
-                    PathFeasibility.THEORETICAL: 1
-                }
-                impact_score = {
-                    ThreatImpact.CRITICAL: 4,
-                    ThreatImpact.HIGH: 3,
-                    ThreatImpact.MEDIUM: 2,
-                    ThreatImpact.LOW: 1
-                }
+                feasibility_score = {"Highly Likely": 3, "Realistic": 2, "Theoretical": 1}
+                impact_score = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
                 return (feasibility_score.get(p.path_feasibility, 1) * 
                        impact_score.get(p.combined_impact, 1))
             
@@ -1059,8 +1004,8 @@ class AttackPathAnalyzer:
             # Identify critical scenarios
             critical_scenarios = []
             for p in attack_paths:
-                if (p.path_feasibility != PathFeasibility.THEORETICAL and 
-                    p.combined_impact in [ThreatImpact.CRITICAL, ThreatImpact.HIGH]):
+                if (p.path_feasibility != "Theoretical" and 
+                    p.combined_impact in ["Critical", "High"]):
                     critical_scenarios.append(p.scenario_name)
                     if len(critical_scenarios) >= 5:
                         break
@@ -1068,203 +1013,40 @@ class AttackPathAnalyzer:
             # Calculate threat coverage
             threat_coverage = self.calculate_threat_coverage(attack_paths, threats)
             
-            # Process with vector store if enabled
-            vector_store_insights = None
-            if self.config.enable_vector_store:
-                try:
-                    vector_store_insights = self._process_vector_store(
-                        attack_paths[:self.config.max_paths_to_analyze],
-                        dfd_data,
-                        defense_priorities
-                    )
-                except Exception as e:
-                    self.logger.error(f"Vector store processing failed: {e}")
-                    # Continue without vector store insights
+            write_progress(5, 98, 100, "Finalizing analysis", "Generating report")
             
             return AttackPathAnalysis(
                 attack_paths=attack_paths[:self.config.max_paths_to_analyze],
                 critical_scenarios=critical_scenarios,
                 defense_priorities=defense_priorities,
                 threat_coverage=threat_coverage,
-                vector_store_insights=vector_store_insights,
+                vector_store_insights=None,  # Simplified version doesn't include vector store
                 metadata={
                     "timestamp": datetime.now().isoformat(),
                     "total_paths_analyzed": len(raw_paths),
                     "detailed_paths_built": len(attack_paths),
                     "total_threats": len(threats),
-                    "entry_points": entry_points[:10],  # Limit for output size
+                    "entry_points": entry_points[:10],
                     "critical_assets": targets[:10],
                     "llm_model": self.config.llm_model if self.config.enable_llm_enrichment else "None",
                     "llm_enrichment_enabled": self.config.enable_llm_enrichment,
-                    "vector_store_enabled": self.config.enable_vector_store,
                     "max_path_length": self.config.max_path_length
                 }
             )
             
         except Exception as e:
-            self.logger.error(f"Attack path analysis failed: {e}", exc_info=True)
-            raise
-    
-    def _process_vector_store(self, attack_paths: List[AttackPath], 
-                             dfd_data: Dict, defense_priorities: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Process attack paths with vector store for cross-project insights."""
-        try:
-            # Lazy import to avoid dependency if not used
-            from attack_path_vector_store import (
-                VectorStoreConfig, AttackPathVectorStore, 
-                VectorStoreIntegration, SearchQuery
-            )
-            
-            self.logger.info("="*60)
-            self.logger.info("VECTOR STORE PROCESSING STARTED")
-            self.logger.info(f"Qdrant URL: {self.config.qdrant_url}")
-            self.logger.info(f"Project Name: {self.config.project_name}")
-            self.logger.info(f"Number of paths to store: {len(attack_paths)}")
-            self.logger.info("="*60)
-            
-            # Create vector store configuration
-            vector_config = VectorStoreConfig(
-                qdrant_url=self.config.qdrant_url,
-                qdrant_api_key=self.config.qdrant_api_key
-            )
-            
-            # Initialize vector store
-            vector_store = AttackPathVectorStore(vector_config)
-            integration = VectorStoreIntegration(vector_store)
-            
-            # Prepare project metadata
-            project_metadata = {
-                "name": self.config.project_name,
-                "industry": self.config.project_industry or dfd_data.get("industry_context", "General"),
-                "tech_stack": self.config.project_tech_stack.split(",") if self.config.project_tech_stack else [],
-                "compliance": self.config.project_compliance.split(",") if self.config.project_compliance else [],
-                "analysis_date": datetime.now().isoformat(),
-                "dfd_components": {
-                    "external_entities": dfd_data.get("external_entities", []),
-                    "processes": dfd_data.get("processes", []),
-                    "assets": dfd_data.get("assets", [])
+            self.logger.error(f"Attack path analysis failed: {e}")
+            write_progress(5, 100, 100, "Failed", str(e))
+            return AttackPathAnalysis(
+                attack_paths=[],
+                critical_scenarios=[],
+                defense_priorities=[],
+                threat_coverage={},
+                metadata={
+                    "timestamp": datetime.now().isoformat(),
+                    "error": str(e)
                 }
-            }
-            
-            self.logger.info(f"Project metadata prepared: {project_metadata['name']}")
-            
-            # Store attack paths and get insights
-            insights = {
-                "stored_paths": 0,
-                "similar_attacks": [],
-                "cross_project_patterns": [],
-                "enhanced_defenses": [],
-                "project_risk_comparison": {}
-            }
-            
-            # Store each attack path
-            for i, path in enumerate(attack_paths):
-                try:
-                    self.logger.info(f"Storing path {i+1}/{len(attack_paths)}: {path.path_id}")
-                    path_id = vector_store.store_attack_path(path, project_metadata)
-                    insights["stored_paths"] += 1
-                    self.logger.info(f"✓ Successfully stored path {path.path_id} with ID: {path_id}")
-                    
-                    # Find similar attacks from other projects
-                    similar_query = SearchQuery(
-                        query_type="path",
-                        query=path,
-                        filters={"exclude_project": project_metadata["name"]},
-                        limit=3,
-                        min_similarity=0.7
-                    )
-                    similar_paths = vector_store.search_similar_paths(similar_query)
-                    
-                    if similar_paths:
-                        self.logger.info(f"  Found {len(similar_paths)} similar paths")
-                        insights["similar_attacks"].append({
-                            "current_path": path.scenario_name,
-                            "similar_scenarios": [
-                                {
-                                    "scenario": sim[0].scenario_name,
-                                    "project": sim[2]["project"]["name"],
-                                    "similarity": round(sim[1], 3),
-                                    "defenses": sim[0].key_chokepoints[:3]
-                                }
-                                for sim in similar_paths
-                            ]
-                        })
-                    
-                    # Get enhanced defense recommendations
-                    defense_recs = vector_store.find_defense_recommendations(path, limit=3)
-                    for rec in defense_recs:
-                        insights["enhanced_defenses"].append({
-                            "path": path.scenario_name,
-                            "control": rec.control_name,
-                            "effectiveness": round(rec.effectiveness_score, 2),
-                            "evidence_count": rec.similar_paths_blocked
-                        })
-                        
-                except Exception as e:
-                    self.logger.error(f"Failed to process path {path.path_id} in vector store: {e}", exc_info=True)
-            
-            self.logger.info(f"Storage complete: {insights['stored_paths']} paths stored successfully")
-            
-            # Get cross-project patterns
-            try:
-                patterns = vector_store.identify_attack_patterns(min_frequency=2)
-                insights["cross_project_patterns"] = [
-                    {
-                        "pattern": p.pattern_name,
-                        "frequency": p.frequency,
-                        "projects_affected": len(p.affected_projects),
-                        "typical_impact": p.typical_impact,
-                        "common_defenses": p.common_defenses[:3]
-                    }
-                    for p in patterns[:5]
-                ]
-                self.logger.info(f"Identified {len(patterns)} attack patterns")
-            except Exception as e:
-                self.logger.warning(f"Failed to identify patterns: {e}")
-            
-            # Get project statistics and risk comparison
-            try:
-                project_stats = vector_store.get_project_statistics(project_metadata["name"])
-                insights["project_risk_comparison"] = {
-                    "current_project": {
-                        "name": project_metadata["name"],
-                        "risk_score": project_stats.get("risk_score", 0),
-                        "total_paths": project_stats.get("total_paths", 0),
-                        "critical_paths": project_stats.get("impact_distribution", {}).get("Critical", 0)
-                    }
-                }
-                self.logger.info(f"Project risk score: {project_stats.get('risk_score', 0)}")
-                
-                # Compare with similar projects if any found
-                if insights["similar_attacks"]:
-                    similar_projects = list(set(
-                        scenario["project"] 
-                        for attack in insights["similar_attacks"] 
-                        for scenario in attack["similar_scenarios"]
-                    ))[:3]
-                    
-                    comparison = vector_store.compare_projects([project_metadata["name"]] + similar_projects)
-                    insights["project_risk_comparison"]["comparison"] = comparison.get("risk_comparison", {})
-                    
-            except Exception as e:
-                self.logger.warning(f"Failed to get project statistics: {e}")
-            
-            self.logger.info("="*60)
-            self.logger.info(f"VECTOR STORE PROCESSING COMPLETE")
-            self.logger.info(f"Total paths stored: {insights['stored_paths']}")
-            self.logger.info(f"Similar attacks found: {len(insights['similar_attacks'])}")
-            self.logger.info(f"Patterns identified: {len(insights['cross_project_patterns'])}")
-            self.logger.info("="*60)
-            
-            return insights
-            
-        except ImportError as e:
-            self.logger.error(f"Vector store module not found: {e}")
-            self.logger.error("Please ensure attack_path_vector_store.py is in the same directory")
-            return {"error": "Vector store module not available"}
-        except Exception as e:
-            self.logger.error(f"Vector store processing failed: {e}", exc_info=True)
-            return {"error": str(e)}
+            )
 
 
 def main():
@@ -1272,21 +1054,29 @@ def main():
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('attack_path_analysis.log'),
-            logging.StreamHandler()
-        ]
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    logger = logging.getLogger(__name__)
     logger.info("=== Starting Attack Path Analysis ===")
+    write_progress(5, 0, 100, "Initializing", "Starting attack path analysis")
     
     try:
         # Load configuration
         config = Config()
         
-        # Validate configuration
+        # Validate paths exist
+        if not os.path.exists(config.refined_threats_path):
+            logger.error(f"Refined threats file not found: {config.refined_threats_path}")
+            logger.error("Please run the threat refinement step first.")
+            write_progress(5, 100, 100, "Failed", "Missing refined threats file")
+            return 1
+        if not os.path.exists(config.dfd_path):
+            logger.error(f"DFD file not found: {config.dfd_path}")
+            logger.error("Please run the DFD extraction step first.")
+            write_progress(5, 100, 100, "Failed", "Missing DFD file")
+            return 1
+        
+        # Log configuration
         logger.info("Configuration loaded:")
         logger.info(f"  Input directory: {config.input_dir}")
         logger.info(f"  Max path length: {config.max_path_length}")
@@ -1298,10 +1088,23 @@ def main():
         # Run analysis
         results = analyzer.analyze()
         
+        # Convert to dict for JSON serialization
+        def convert_to_dict(obj):
+            if hasattr(obj, '__dict__'):
+                return {k: convert_to_dict(v) for k, v in obj.__dict__.items()}
+            elif isinstance(obj, list):
+                return [convert_to_dict(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: convert_to_dict(v) for k, v in obj.items()}
+            else:
+                return obj
+        
+        output_data = convert_to_dict(results)
+        
         # Save results
-        output_data = results.dict()
-        with open(config.attack_paths_output, 'w') as f:
-            json.dump(output_data, f, indent=2)
+        write_progress(5, 99, 100, "Saving results", config.attack_paths_output)
+        with open(config.attack_paths_output, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
             
         logger.info(f"Analysis complete. Results saved to {config.attack_paths_output}")
         
@@ -1333,42 +1136,32 @@ def main():
             print(f"  Steps: {path.total_steps} | Feasibility: {path.path_feasibility}")
             print(f"  Impact: {path.combined_impact} | Time: {path.time_to_compromise}")
             
-        # Display vector store insights if available
-        if results.vector_store_insights and results.vector_store_insights.get("stored_paths", 0) > 0:
-            print("\n🔍 Vector Store Insights:")
-            insights = results.vector_store_insights
-            print(f"  Stored paths: {insights['stored_paths']}")
-            
-            if insights.get("similar_attacks"):
-                print(f"  Similar attacks found: {len(insights['similar_attacks'])}")
-                for attack in insights["similar_attacks"][:2]:
-                    print(f"    - {attack['current_path']} similar to:")
-                    for sim in attack["similar_scenarios"][:1]:
-                        print(f"      • {sim['scenario']} from {sim['project']} (similarity: {sim['similarity']})")
-                        
-            if insights.get("cross_project_patterns"):
-                print(f"  Cross-project patterns: {len(insights['cross_project_patterns'])}")
-                for pattern in insights["cross_project_patterns"][:2]:
-                    print(f"    - {pattern['pattern']} (seen {pattern['frequency']} times)")
-                    
-            if insights.get("project_risk_comparison", {}).get("current_project"):
-                risk_info = insights["project_risk_comparison"]["current_project"]
-                print(f"  Project risk score: {risk_info.get('risk_score', 'N/A')}/100")
-            
         print("\n✅ Analysis completed successfully!")
+        write_progress(5, 100, 100, "Complete", f"Found {len(results.attack_paths)} attack paths")
+        
+        # Clean up progress file after success
+        try:
+            progress_file = os.path.join(config.output_dir, 'step_5_progress.json')
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
+        except:
+            pass
+        
         return 0
         
     except FileNotFoundError as e:
         logger.error(f"Required file not found: {e}")
         print(f"\n❌ Error: {e}")
         print("Please ensure the threat modeling pipeline has been run first.")
+        write_progress(5, 100, 100, "Failed", str(e))
         return 1
         
     except Exception as e:
-        logger.error(f"Attack path analysis failed: {e}", exc_info=True)
+        logger.error(f"Attack path analysis failed: {e}")
         print(f"\n❌ Analysis failed: {e}")
+        write_progress(5, 100, 100, "Failed", str(e))
         return 1
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())
