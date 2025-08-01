@@ -336,8 +336,12 @@ class ThreatProcessor:
         impact_values = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
         likelihood_values = {"High": 3, "Medium": 2, "Low": 1}
         
-        score = impact_values.get(impact, 1) * likelihood_values.get(likelihood, 1)
+        # Calculate numeric score
+        impact_val = impact_values.get(impact, 1)
+        likelihood_val = likelihood_values.get(likelihood, 1)
+        score = impact_val * likelihood_val
         
+        # Return appropriate risk score string based on calculation
         if score >= 9:
             return "Critical"
         elif score >= 6:

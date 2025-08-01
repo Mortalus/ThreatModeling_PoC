@@ -293,6 +293,11 @@ def generate_review_items(step, step_data):
     
     if step == 2:  # DFD Extraction
         dfd = step_data.get('dfd', {})
+    
+        # First, check for quality warnings and generate review items
+        quality_warnings = step_data.get('metadata', {}).get('quality_warnings', {})
+        if quality_warnings:
+            items.extend(generate_dfd_quality_review_items(dfd, quality_warnings))
         
         # Review external entities
         for entity in dfd.get('external_entities', []):
@@ -392,6 +397,63 @@ def generate_review_items(step, step_data):
                 })
     
     return items
+
+def generate_dfd_quality_review_items(dfd_data: dict, anomalies: dict) -> list:
+    """
+    Generate review items based on detected anomalies.
+    """
+    review_items = []
+    
+    # Review items for orphan components
+    for orphan in anomalies.get('orphan_components', []):
+        review_items.append({
+            'id': str(uuid.uuid4()),
+            'type': 'orphan_component',
+            'value': orphan,
+            'confidence': 0.3,  # Low confidence indicates high need for review
+            'status': 'pending',
+            'questions': [
+                f"Component '{orphan}' is not connected to any data flows. Should it be removed?",
+                "If keeping it, what data flows should connect to this component?"
+            ],
+            'action_options': ['Remove', 'Add Flows', 'Keep as-is']
+        })
+    
+    # Review items for dead-end processes
+    for dead_end in anomalies.get('dead_end_processes', []):
+        review_items.append({
+            'id': str(uuid.uuid4()),
+            'type': 'dead_end_process',
+            'value': dead_end,
+            'confidence': 0.4,
+            'status': 'pending',
+            'questions': [
+                f"Process '{dead_end}' only receives data but never sends any. Is this correct?",
+                "What happens to the data after it reaches this process?"
+            ],
+            'suggestions': [
+                "Add outgoing data flows to downstream components",
+                "Mark as a terminal process (e.g., logging service)"
+            ]
+        })
+    
+    # Review items for undefined references
+    for undefined in anomalies.get('undefined_references', []):
+        review_items.append({
+            'id': str(uuid.uuid4()),
+            'type': 'undefined_reference',
+            'value': undefined,
+            'confidence': 0.1,  # Very low confidence - definitely needs fixing
+            'status': 'pending',
+            'critical': True,
+            'questions': [
+                f"Data flow references {undefined}, but this component is not defined.",
+                "Should this component be added to the appropriate list?"
+            ],
+            'required_action': 'Define component or fix reference'
+        })
+    
+    return review_items
 
 def apply_review_corrections(step, item, corrections):
     """Apply expert corrections to the pipeline data."""

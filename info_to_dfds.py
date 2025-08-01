@@ -135,6 +135,121 @@ class DFDOutput(BaseModel):
     dfd: DFDComponents
     metadata: dict
 
+def quality_check_dfd(dfd_data: dict, client, model: str) -> dict:
+    """
+    Perform a second-pass quality check on the DFD using LLM.
+    """
+    quality_prompt = """You are a quality assurance analyst reviewing a Data Flow Diagram (DFD) JSON.
+Your task is to identify and fix the following issues:
+
+1. **Duplicates**: Find and remove duplicate entries in external_entities, processes, and assets lists.
+2. **Abbreviations**: Expand abbreviated component names to full descriptive names when the context allows.
+   - Example: "DB_P" → "Profile Database"
+   - Example: "WS" → "Web Server"
+3. **Vague Terms**: Resolve vague references like "All Systems" into specific component lists.
+4. **Consistency**: Ensure data flow sources and destinations match the defined components.
+5. **Missing Details**: Add missing authentication mechanisms or protocols where obvious.
+
+Current DFD JSON:
+{dfd_json}
+
+Return ONLY the corrected DFD JSON with the same structure, no additional commentary.
+Focus on accuracy and consistency."""
+    
+    try:
+        dfd_json_str = json.dumps(dfd_data, indent=2)
+        
+        if isinstance(client, OpenAI):  # Scaleway
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": quality_prompt.format(dfd_json=dfd_json_str)}],
+                response_format={"type": "json_object"},
+                temperature=0.3
+            )
+            corrected_json = json.loads(response.choices[0].message.content)
+        else:  # Ollama
+            response = client.chat(
+                model=model,
+                messages=[{"role": "user", "content": quality_prompt.format(dfd_json=dfd_json_str)}]
+            )
+            corrected_json = json.loads(response['message']['content'])
+        
+        logger.info("Quality check completed successfully")
+        return corrected_json
+        
+    except Exception as e:
+        logger.warning(f"Quality check failed: {e}. Using original DFD.")
+        return dfd_data
+
+
+def detect_dfd_anomalies(dfd_data: dict) -> dict:
+    """
+    Detect structural anomalies in the DFD without using a graph library.
+    Returns a dictionary of warnings.
+    """
+    warnings = {
+        "orphan_components": [],
+        "dead_end_processes": [],
+        "source_only_processes": [],
+        "undefined_references": [],
+        "duplicate_flows": []
+    }
+    
+    # Get all components
+    all_entities = set(dfd_data.get('external_entities', []))
+    all_processes = set(dfd_data.get('processes', []))
+    all_assets = set(dfd_data.get('assets', []))
+    all_components = all_entities | all_processes | all_assets
+    
+    # Track component usage in data flows
+    components_as_source = set()
+    components_as_destination = set()
+    flow_pairs = set()
+    
+    for flow in dfd_data.get('data_flows', []):
+        source = flow.get('source')
+        dest = flow.get('destination')
+        
+        if source:
+            components_as_source.add(source)
+        if dest:
+            components_as_destination.add(dest)
+            
+        # Check for undefined references
+        if source and source not in all_components:
+            warnings['undefined_references'].append(f"Source '{source}' not defined in components")
+        if dest and dest not in all_components:
+            warnings['undefined_references'].append(f"Destination '{dest}' not defined in components")
+            
+        # Check for duplicate flows
+        flow_pair = (source, dest, flow.get('protocol', ''))
+        if flow_pair in flow_pairs:
+            warnings['duplicate_flows'].append(f"Duplicate flow: {source} → {dest} ({flow.get('protocol', 'Unknown')})")
+        flow_pairs.add(flow_pair)
+    
+    # Find orphan components (not in any data flow)
+    used_components = components_as_source | components_as_destination
+    orphans = all_components - used_components
+    warnings['orphan_components'] = list(orphans)
+    
+    # Find dead-end processes (only receive, never send)
+    for process in all_processes:
+        if process in components_as_destination and process not in components_as_source:
+            warnings['dead_end_processes'].append(process)
+    
+    # Find source-only processes (only send, never receive)
+    for process in all_processes:
+        if process in components_as_source and process not in components_as_destination:
+            # External entities are expected to be source-only, so skip them
+            if process not in all_entities:
+                warnings['source_only_processes'].append(process)
+    
+    # Remove empty warning categories
+    warnings = {k: v for k, v in warnings.items() if v}
+    
+    return warnings
+
+
 # --- Sample Input for Testing (if no documents are found) ---
 SAMPLE_DOCUMENT_CONTENT = """
 System: Web Application Security Model, Version 1.1, Finance Industry
@@ -278,8 +393,7 @@ try:
             logger.info(f"Output Tokens: {completion_tokens}")
             logger.info(f"Total Tokens: {total_tokens}")
 
-        
-    else:
+    else: # Ollama
         # Use instructor client for Ollama
         write_progress(2, 50, 100, "Processing with LLM", "Extracting DFD components")
         
@@ -306,20 +420,46 @@ try:
         logger.info(f"--- Token Usage & Performance ---")
         logger.info(f"Input Tokens: {prompt_tokens} (processed in {prompt_duration_s})")
         logger.info(f"Output Tokens: {response_tokens} (generated in {response_duration_s})")
-
+    
     write_progress(2, 80, 100, "Building output", "Creating final structure")
     dfd_dict = dfd_obj.model_dump()
-    
-    # Add metadata
+
+    # Run quality check if enabled
+    if os.getenv('ENABLE_DFD_QUALITY_CHECK', 'true').lower() == 'true':
+        write_progress(2, 85, 100, "Quality check", "Running automated quality improvement")
+        
+        # Use the appropriate client for quality check
+        if client_type == "scaleway":
+            # For Scaleway, we need the raw OpenAI client
+            raw_client = OpenAI(base_url=SCW_API_URL, api_key=SCW_SECRET_KEY)
+            dfd_dict = quality_check_dfd(dfd_dict, raw_client, LLM_MODEL)
+        else:
+            # For Ollama, use the raw_client we already have
+            dfd_dict = quality_check_dfd(dfd_dict, raw_client, LLM_MODEL)
+
+    # Detect anomalies
+    write_progress(2, 88, 100, "Anomaly detection", "Checking for structural issues")
+    anomalies = detect_dfd_anomalies(dfd_dict)
+
+    # Add metadata with anomalies
     output_dict = {
         "dfd": dfd_dict,
         "metadata": {
             "timestamp": datetime.now().isoformat(),
             "source_documents": glob.glob(os.path.join(INPUT_DIR, "*.[tT][xX][tT]")) + glob.glob(os.path.join(INPUT_DIR, "*.[pP][dD][fF]")),
             "assumptions": [],
-            "llm_provider": LLM_PROVIDER
+            "llm_provider": LLM_PROVIDER,
+            "quality_warnings": anomalies if anomalies else None,
+            "quality_check_performed": os.getenv('ENABLE_DFD_QUALITY_CHECK', 'true').lower() == 'true'
         }
     }
+
+    # Log warnings if any
+    if anomalies:
+        logger.warning("DFD Quality Warnings Found:")
+        for warning_type, items in anomalies.items():
+            if items:
+                logger.warning(f"  {warning_type}: {items}")
     
     # Validate the output against schema
     write_progress(2, 90, 100, "Validating output", "Checking schema compliance")
