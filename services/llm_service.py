@@ -3,6 +3,7 @@ Service for LLM interactions in DFD extraction.
 """
 import json
 import logging
+import requests
 from typing import Optional, Dict, Any
 from models.dfd_models import SimpleDFDComponents, SimpleDataFlow
 from services.rule_based_extractor import RuleBasedExtractor
@@ -53,17 +54,118 @@ class LLMService:
                     logger.info("✅ Scaleway client with instructor initialized")
                 else:
                     logger.info("✅ Scaleway client initialized (no structured output)")
+                    
+            elif self.provider == "ollama":
+                # For Ollama, we'll use direct HTTP requests
+                self.ollama_endpoint = self.config.get('local_llm_endpoint', 'http://localhost:11434/api/generate')
+                logger.info(f"✅ Ollama client configured for {self.ollama_endpoint}")
+                logger.info(f"📊 Using model: {self.model}")
                 
+                # Test connection
+                try:
+                    test_url = self.ollama_endpoint.replace('/api/generate', '/api/tags')
+                    response = requests.get(test_url, timeout=5)
+                    if response.status_code == 200:
+                        logger.info("✅ Ollama server is reachable")
+                        models = response.json().get('models', [])
+                        model_names = [m.get('name', '') for m in models]
+                        if self.model in model_names:
+                            logger.info(f"✅ Model {self.model} is available")
+                        else:
+                            logger.warning(f"⚠️ Model {self.model} not found. Available: {model_names}")
+                    else:
+                        logger.warning(f"⚠️ Ollama server returned status {response.status_code}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Cannot reach Ollama server: {e}")
             else:
-                logger.warning("❌ LLM client not available - will use rule-based extraction")
+                logger.warning("❌ Unknown LLM provider - will use rule-based extraction")
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize LLM client: {e}")
             self.client = None
             self.raw_client = None
     
+    def _call_ollama(self, prompt: str) -> Optional[str]:
+        """Call Ollama API directly."""
+        try:
+            logger.info(f"🤖 Calling Ollama with model: {self.model}")
+            logger.info(f"📝 Prompt length: {len(prompt)} characters")
+            
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": self.config.get('temperature', 0.2),
+                    "num_predict": self.config.get('max_tokens', 4096),
+                    "top_p": 0.95,
+                    "seed": 42  # For reproducibility
+                }
+            }
+            
+            logger.info("⏳ Waiting for Ollama response...")
+            response = requests.post(
+                self.ollama_endpoint,
+                json=payload,
+                timeout=self.config.get('timeout', 300)
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                response_text = result.get('response', '')
+                logger.info(f"✅ Received response: {len(response_text)} characters")
+                logger.debug(f"First 200 chars: {response_text[:200]}...")
+                return response_text
+            else:
+                logger.error(f"Ollama API error: {response.status_code} - {response.text}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.error("Ollama request timed out - consider increasing timeout in settings")
+            return None
+        except requests.exceptions.ConnectionError:
+            logger.error("Cannot connect to Ollama - is it running? (ollama serve)")
+            return None
+        except Exception as e:
+            logger.error(f"Ollama API error: {e}")
+            return None
+    
     def extract_dfd_components(self, content: str, doc_analysis: Dict) -> Optional[SimpleDFDComponents]:
         """Extract DFD components using LLM with fallback."""
+        # Check if we should use Ollama
+        if self.provider == "ollama":
+            logger.info("🔍 Using Ollama for DFD extraction")
+            prompt = self._build_extraction_prompt(content, doc_analysis)
+            response_text = self._call_ollama(prompt + "\n\nRespond with valid JSON only. Do not include any explanations or markdown formatting.")
+            
+            if response_text:
+                try:
+                    # Clean the response - remove any markdown or extra text
+                    response_text = response_text.strip()
+                    
+                    # Find JSON in the response
+                    json_start = response_text.find('{')
+                    json_end = response_text.rfind('}') + 1
+                    
+                    if json_start >= 0 and json_end > json_start:
+                        json_text = response_text[json_start:json_end]
+                        data = json.loads(json_text)
+                        logger.info("✅ Successfully parsed Ollama response")
+                        return self._dict_to_simple_components(data)
+                    else:
+                        logger.error("No valid JSON found in response")
+                        logger.debug(f"Response was: {response_text[:500]}...")
+                        return self.rule_extractor.extract(content, doc_analysis)
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse Ollama response as JSON: {e}")
+                    logger.debug(f"Response was: {response_text[:500]}...")
+                    return self.rule_extractor.extract(content, doc_analysis)
+            else:
+                logger.warning("No response from Ollama, falling back to rule-based extraction")
+                return self.rule_extractor.extract(content, doc_analysis)
+        
+        # Original Scaleway logic
         if not self.raw_client:
             logger.warning("No LLM client available, using rule-based extraction")
             return self.rule_extractor.extract(content, doc_analysis)
@@ -71,7 +173,7 @@ class LLMService:
         try:
             prompt = self._build_extraction_prompt(content, doc_analysis)
             
-            # Try raw text extraction
+            logger.info("🔍 Using Scaleway for DFD extraction")
             response = self.raw_client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt + "\n\nRespond with valid JSON only."}],
@@ -88,6 +190,7 @@ class LLMService:
                 response_text = response_text[:-3]
             
             data = json.loads(response_text)
+            logger.info("✅ Successfully parsed Scaleway response")
             return self._dict_to_simple_components(data)
             
         except Exception as e:
@@ -96,6 +199,11 @@ class LLMService:
     
     def _build_extraction_prompt(self, content: str, doc_analysis: Dict) -> str:
         """Build extraction prompt."""
+        # Truncate content if too long for the model
+        max_content_length = 8000  # Leave room for the rest of the prompt
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "\n... [content truncated]"
+            
         return f"""You are an expert cybersecurity architect analyzing system documentation to extract Data Flow Diagram (DFD) components for threat modeling.
 
 DOCUMENT ANALYSIS:
@@ -117,7 +225,7 @@ CRITICAL RULES:
 - Include realistic security protocols and authentication mechanisms
 
 DOCUMENT CONTENT:
-{content[:4000]}{"..." if len(content) > 4000 else ""}
+{content}
 
 Extract comprehensive DFD components as JSON with the following structure:
 {{
@@ -171,5 +279,9 @@ Extract comprehensive DFD components as JSON with the following structure:
                 encryption_in_transit=flow_data.get('encryption_in_transit', True)
             )
             result.data_flows.append(flow)
+        
+        logger.info(f"📊 Extracted: {len(result.external_entities)} entities, "
+                   f"{len(result.processes)} processes, {len(result.assets)} assets, "
+                   f"{len(result.data_flows)} data flows")
         
         return result

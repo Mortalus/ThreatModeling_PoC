@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI-Powered Threat Modeling Pipeline">
+    <meta name="theme-color" content="#0a0e1a">
     <title>Advanced Threat Modeling Pipeline</title>
     
     <link rel="stylesheet" href="style.css">
@@ -18,6 +20,100 @@
 <body>
     <div id="root"></div>
 
-    <script type="text/babel" src="script.js"></script>
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>⚙️ Settings</h2>
+                <span class="close" onclick="closeSettingsModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <!-- LLM Configuration -->
+                <div class="settings-section">
+                    <h3>LLM Configuration</h3>
+                    <div class="form-group">
+                        <label for="llm-provider">LLM Provider:</label>
+                        <select id="llm-provider" class="form-select">
+                            <option value="scaleway">Scaleway</option>
+                            <option value="ollama">Ollama (Local)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="llm-model">Model:</label>
+                        <input type="text" id="llm-model" class="form-input" value="llama-3.3-70b-instruct">
+                    </div>
+                    <div class="form-group" id="api-key-group">
+                        <label for="scw-api-key">Scaleway API Key:</label>
+                        <input type="password" id="scw-api-key" class="form-input" placeholder="Enter your API key">
+                    </div>
+                    <div class="form-group" id="local-endpoint-group" style="display: none;">
+                        <label for="local-endpoint">Local LLM Endpoint:</label>
+                        <input type="text" id="local-endpoint" class="form-input" value="http://localhost:11434/api/generate">
+                    </div>
+                </div>
+
+                <!-- Processing Parameters -->
+                <div class="settings-section">
+                    <h3>Processing Parameters</h3>
+                    <div class="form-group">
+                        <label for="timeout">Timeout (seconds):</label>
+                        <input type="number" id="timeout" class="form-input" value="5000" min="60" max="10000">
+                    </div>
+                    <div class="form-group">
+                        <label for="temperature">Temperature (0-1):</label>
+                        <input type="number" id="temperature" class="form-input" value="0.2" min="0" max="1" step="0.1">
+                    </div>
+                    <div class="form-group">
+                        <label for="max-tokens">Max Tokens:</label>
+                        <input type="number" id="max-tokens" class="form-input" value="4096" min="1000" max="8192">
+                    </div>
+                </div>
+
+                <!-- Feature Flags -->
+                <div class="settings-section">
+                    <h3>Features</h3>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enable-quality-check" checked>
+                        <label for="enable-quality-check">Enable DFD Quality Check</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enable-multi-pass" checked>
+                        <label for="enable-multi-pass">Enable Multi-Pass Processing</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enable-mermaid" checked>
+                        <label for="enable-mermaid">Enable Mermaid Diagrams</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="enable-llm-enrichment" checked>
+                        <label for="enable-llm-enrichment">Enable LLM Enrichment</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="mitre-enabled" checked>
+                        <label for="mitre-enabled">Enable MITRE ATT&CK Mapping</label>
+                    </div>
+                </div>
+
+                <!-- Directories -->
+                <div class="settings-section">
+                    <h3>Directories</h3>
+                    <div class="form-group">
+                        <label for="output-dir">Output Directory:</label>
+                        <input type="text" id="output-dir" class="form-input" value="./output" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="input-dir">Input Directory:</label>
+                        <input type="text" id="input-dir" class="form-input" value="./input_documents" readonly>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+                <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/babel" src="scripts.js"></script>
 </body>
 </html>
