@@ -1,6 +1,7 @@
 from utils.logging_utils import logger
 
-def register_websocket_handlers(socketio):
+
+def register_websocket_handlers(socketio, pipeline_state):
     @socketio.on('connect')
     def handle_connect():
         logger.info('Client connected')

@@ -3,6 +3,9 @@ from datetime import datetime
 from services.pipeline_service import PipelineService
 from models.pipeline_state import PipelineState
 from utils.logging_utils import logger
+import subprocess
+import os
+import traceback
 
 def register_pipeline_routes(app, pipeline_state: PipelineState, runtime_config, socketio, output_folder, input_folder):
     @app.route('/api/progress/<session_id>', methods=['GET'])

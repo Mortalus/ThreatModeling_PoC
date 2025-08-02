@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+
 try:
     import PyPDF2
     PDF_AVAILABLE = True

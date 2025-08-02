@@ -43,7 +43,13 @@ def create_app():
     register_routes(app, pipeline_state, runtime_config, UPLOAD_FOLDER, OUTPUT_FOLDER, INPUT_FOLDER, socketio)
     register_review_routes(app, pipeline_state, socketio, OUTPUT_FOLDER)
     register_pipeline_routes(app, pipeline_state, runtime_config, socketio, OUTPUT_FOLDER, INPUT_FOLDER)
-    register_websocket_handlers(socketio)
+    register_websocket_handlers(socketio, pipeline_state)
+    logger.info("Starting Enhanced Threat Modeling Pipeline Backend...")
+    logger.info("Review system: ENABLED")
+    logger.info(f"Upload folder: {UPLOAD_FOLDER}")
+    logger.info(f"Output folder: {OUTPUT_FOLDER}")
+    logger.info(f"Input folder: {INPUT_FOLDER}")
+    logger.info("Backend ready with review system!")
 
     @app.errorhandler(Exception)
     def handle_exception(e):
@@ -58,12 +64,6 @@ def create_app():
     return app, socketio
 
 if __name__ == '__main__':
-    logger.info("Starting Enhanced Threat Modeling Pipeline Backend...")
-    logger.info("Review system: ENABLED")
-    logger.info(f"Upload folder: {UPLOAD_FOLDER}")
-    logger.info(f"Output folder: {OUTPUT_FOLDER}")
-    logger.info(f"Input folder: {INPUT_FOLDER}")
-    logger.info("Backend ready with review system!")
     app, socketio = create_app()
     socketio.run(app, debug=True, port=5000, host='0.0.0.0')
 else:
