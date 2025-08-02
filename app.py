@@ -50,7 +50,27 @@ def create_app():
     load_saved_config(runtime_config, OUTPUT_FOLDER)
     
     Config.ensure_directories(UPLOAD_FOLDER, OUTPUT_FOLDER, INPUT_FOLDER)
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder='.')
+
+# Add CSP headers to allow eval for development
+    @app.after_request
+    def add_security_headers(response):
+        # For development only - allows Babel to work
+        # In production, you should pre-compile your JSX
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self' http://localhost:* ws://localhost:*; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; "
+            "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self' http://localhost:* ws://localhost:*; "
+            "font-src 'self' data:; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none';"
+        )
+        return response
+
     CORS(app)
     socketio = SocketIO(app, cors_allowed_origins="*")
     setup_logging()

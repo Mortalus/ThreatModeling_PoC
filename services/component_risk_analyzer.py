@@ -2,7 +2,7 @@
 Service for analyzing component risk and prioritization.
 """
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from models.threat_models import ComponentAnalysis, COMPONENT_STRIDE_MAPPING
 
 logger = logging.getLogger(__name__)

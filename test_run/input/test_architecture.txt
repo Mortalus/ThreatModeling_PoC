@@ -1,0 +1,26 @@
+
+    HealthData Insights Platform - System Architecture
+    
+    This document describes the architecture of our healthcare data platform.
+    
+    External Entities:
+    - Patient Portal: Web interface for patients
+    - Admin User: System administrators
+    - External API: Third-party integrations
+    
+    Core Processes:
+    - Web Server: Handles HTTP requests
+    - Authentication Service: Manages user authentication
+    - API Gateway: Routes API requests
+    - Database Service: Manages data persistence
+    
+    Data Stores:
+    - Patient Database: Stores patient records (encrypted)
+    - Session Store: Manages user sessions
+    - Audit Logs: Security audit trail
+    
+    Key Data Flows:
+    - Patient Portal sends login credentials to Web Server over HTTPS
+    - Web Server queries Patient Database using TLS
+    - API Gateway logs all requests to Audit Logs
+    

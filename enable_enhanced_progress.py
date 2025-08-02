@@ -1,4 +1,33 @@
+#!/usr/bin/env python3
 """
+Enable enhanced progress display for existing scripts
+Run this to patch the progress_utils module with enhanced features
+"""
+
+import os
+import shutil
+import sys
+
+def enable_enhanced_progress():
+    """Copy enhanced progress to utils directory"""
+    
+    # Check if we're in the right directory
+    if not os.path.exists('utils/progress_utils.py'):
+        print("❌ Error: Run this script from the project root directory")
+        return False
+    
+    # Backup original
+    if not os.path.exists('utils/progress_utils_original.py'):
+        shutil.copy('utils/progress_utils.py', 'utils/progress_utils_original.py')
+        print("✅ Backed up original progress_utils.py")
+    
+    # Check if enhanced version exists
+    if not os.path.exists('utils/enhanced_progress.py'):
+        print("❌ Error: enhanced_progress.py not found. Create it first.")
+        return False
+    
+    # Create a wrapper that includes both old and new functionality
+    wrapper_content = '''"""
 Enhanced progress utilities with console display
 This is a patched version that adds console progress bars
 """
@@ -95,3 +124,32 @@ if ENHANCED_AVAILABLE:
                'ProgressTracker', 'ProgressLogger', 'Colors']
 else:
     __all__ = ['write_progress', 'check_kill_signal', 'cleanup_progress_file']
+'''
+    
+    # Write the wrapper
+    with open('utils/progress_utils.py', 'w') as f:
+        f.write(wrapper_content)
+    
+    print("✅ Enhanced progress system enabled!")
+    print("\nUsage:")
+    print("  - Progress bars will show in console by default")
+    print("  - Disable with: export SHOW_PROGRESS_CONSOLE=false")
+    print("  - Restore original: python enable_enhanced_progress.py --restore")
+    
+    return True
+
+def restore_original():
+    """Restore original progress_utils.py"""
+    if os.path.exists('utils/progress_utils_original.py'):
+        shutil.copy('utils/progress_utils_original.py', 'utils/progress_utils.py')
+        print("✅ Restored original progress_utils.py")
+        return True
+    else:
+        print("❌ Error: Original backup not found")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == '--restore':
+        restore_original()
+    else:
+        enable_enhanced_progress()
