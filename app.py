@@ -117,7 +117,8 @@ pipeline_state = {
     'validations': {},
     'review_queue': {},      # Items needing review per step
     'review_history': [],    # Audit trail of all reviews
-    'quality_metrics': {}    # Track quality improvements
+    'quality_metrics': {},   # Track quality improvements
+    'progress': {}          # Track progress for each step
 }
 
 # Lock for thread-safe operations
@@ -188,6 +189,43 @@ def add_log(message, log_type='info'):
             pipeline_state['logs'] = pipeline_state['logs'][-1000:]
     
     logger.info(f"[{log_type}] {message}")
+
+# ==================== PROGRESS TRACKING ====================
+
+def update_progress(session_id, step, data):
+    """Update progress for a specific step."""
+    with state_lock:
+        if session_id not in pipeline_state['progress']:
+            pipeline_state['progress'][session_id] = {}
+        
+        pipeline_state['progress'][session_id][step] = {
+            **data,
+            'last_update': datetime.now().isoformat()
+        }
+    
+    # Emit progress update via WebSocket
+    socketio.emit('progress_update', {
+        'session_id': session_id,
+        'step': step,
+        'progress': data
+    })
+
+def get_step_progress(step):
+    """Get progress information for a specific step."""
+    progress_file = os.path.join(OUTPUT_FOLDER, f'step_{step}_progress.json')
+    
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading progress file: {e}")
+    
+    return {
+        'status': 'unknown',
+        'progress': 0,
+        'message': 'No progress information available'
+    }
 
 # ==================== REVIEW SYSTEM FUNCTIONS ====================
 
@@ -758,6 +796,100 @@ def export_review_report():
         logger.error(f"Review report error: {e}")
         return jsonify({'error': str(e)}), 500
 
+# ==================== PROGRESS API ENDPOINT ====================
+
+@app.route('/api/progress/<session_id>', methods=['GET'])
+def get_progress(session_id):
+    """Get progress for a specific session or 'latest' for current session."""
+    try:
+        with state_lock:
+            if session_id == 'latest':
+                session_id = pipeline_state.get('current_session')
+            
+            if not session_id:
+                return jsonify({
+                    'error': 'No active session',
+                    'overall_percentage': 0,
+                    'current_step': 0,
+                    'status': 'idle'
+                })
+            
+            # Check for cached progress in memory first
+            session_progress = pipeline_state.get('progress', {}).get(session_id, {})
+            
+            # Then check progress files on disk
+            overall_progress = {
+                'overall_percentage': 0,
+                'current_step': 0,
+                'status': 'unknown',
+                'steps': [],
+                'elapsed_time': 0
+            }
+            
+            # Define step information
+            step_info = [
+                {'name': 'Document Upload', 'description': 'Upload and extract text from documents'},
+                {'name': 'DFD Extraction', 'description': 'Extract data flow diagram components'},
+                {'name': 'Threat Identification', 'description': 'Identify threats using STRIDE methodology'},
+                {'name': 'Threat Refinement', 'description': 'Improve and enrich threat quality'},
+                {'name': 'Attack Path Analysis', 'description': 'Analyze potential attack paths'}
+            ]
+            
+            completed_steps = 0
+            current_step_num = 0
+            all_steps_data = []
+            
+            # Check each step
+            for i in range(1, 6):
+                step_completed = i in pipeline_state.get('step_outputs', {})
+                step_progress_data = get_step_progress(i)
+                
+                # Merge memory and disk progress
+                if i in session_progress:
+                    step_progress_data.update(session_progress[i])
+                
+                step_data = {
+                    'name': step_info[i-1]['name'],
+                    'description': step_info[i-1]['description'],
+                    'percentage': 100 if step_completed else step_progress_data.get('progress', 0),
+                    'status': 'completed' if step_completed else step_progress_data.get('status', 'pending'),
+                    'details': step_progress_data.get('message', ''),
+                    'sub_steps': step_progress_data.get('sub_steps', [])
+                }
+                
+                all_steps_data.append(step_data)
+                
+                if step_completed:
+                    completed_steps += 1
+                elif step_data['status'] == 'running':
+                    current_step_num = i
+            
+            # Calculate overall percentage
+            if current_step_num > 0:
+                # Current step is running
+                current_step_progress = all_steps_data[current_step_num - 1]['percentage']
+                overall_progress['overall_percentage'] = ((completed_steps + current_step_progress / 100) / 5) * 100
+                overall_progress['current_step'] = current_step_num
+                overall_progress['status'] = 'running'
+            else:
+                # No step is running
+                overall_progress['overall_percentage'] = (completed_steps / 5) * 100
+                overall_progress['current_step'] = completed_steps
+                overall_progress['status'] = 'completed' if completed_steps == 5 else 'idle'
+            
+            overall_progress['steps'] = all_steps_data
+            
+            return jsonify(overall_progress)
+            
+    except Exception as e:
+        logger.error(f"Progress check error: {e}")
+        return jsonify({
+            'error': str(e),
+            'overall_percentage': 0,
+            'current_step': 0,
+            'status': 'error'
+        })
+
 # ==================== ORIGINAL ENDPOINTS WITH REVIEW INTEGRATION ====================
 
 def validate_json_structure(data, step):
@@ -1016,6 +1148,15 @@ def run_step():
         
         add_log(f"Starting step {step}", 'info')
         
+        # Update progress
+        session_id = pipeline_state.get('current_session')
+        if session_id:
+            update_progress(session_id, step, {
+                'status': 'running',
+                'progress': 0,
+                'message': f'Starting step {step}...'
+            })
+        
         # Setup environment
         env = os.environ.copy()
         env_updates = {
@@ -1100,6 +1241,12 @@ def run_step():
             if result.returncode != 0:
                 error_msg = result.stderr or result.stdout or f'Script {script_name} failed'
                 add_log(f"Step {step} failed: {error_msg}", 'error')
+                if session_id:
+                    update_progress(session_id, step, {
+                        'status': 'error',
+                        'progress': 0,
+                        'message': error_msg
+                    })
                 return jsonify({'error': f'Script execution failed: {error_msg}'}), 500
         
         # Load and validate output
@@ -1147,6 +1294,14 @@ def run_step():
                     count = len(step_data['attack_paths'])
                 
                 add_log(f"Step {step} completed: {count} items found", 'success')
+                
+                # Update progress
+                if session_id:
+                    update_progress(session_id, step, {
+                        'status': 'completed',
+                        'progress': 100,
+                        'message': f'Step {step} completed successfully'
+                    })
                 
                 response_data = {
                     **step_data,
@@ -1322,26 +1477,6 @@ def get_status():
         logger.error(f"Error getting status: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/step-progress/<int:step>', methods=['GET'])
-def get_step_progress(step):
-    """Get real-time progress for a running step."""
-    try:
-        progress_file = os.path.join(OUTPUT_FOLDER, f'step_{step}_progress.json')
-        
-        if os.path.exists(progress_file):
-            with open(progress_file, 'r') as f:
-                progress_data = json.load(f)
-            return jsonify(progress_data)
-        else:
-            return jsonify({
-                'status': 'unknown',
-                'progress': 0,
-                'message': 'No progress information available'
-            })
-    except Exception as e:
-        logger.error(f"Progress check error: {e}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint."""
@@ -1511,7 +1646,8 @@ def reset_pipeline():
                 'validations': {},
                 'review_queue': {},
                 'review_history': [],
-                'quality_metrics': {}
+                'quality_metrics': {},
+                'progress': {}
             }
         
         # Optionally clean output directory
@@ -1552,6 +1688,30 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     logger.info('Client disconnected')
+
+@socketio.on('request_progress')
+def handle_progress_request(data):
+    """Handle real-time progress requests via WebSocket."""
+    session_id = data.get('session_id', 'latest')
+    
+    try:
+        with state_lock:
+            if session_id == 'latest':
+                session_id = pipeline_state.get('current_session')
+            
+            if session_id and session_id in pipeline_state.get('progress', {}):
+                emit('progress_update', {
+                    'session_id': session_id,
+                    'progress': pipeline_state['progress'][session_id]
+                })
+            else:
+                emit('progress_update', {
+                    'session_id': session_id,
+                    'error': 'No progress data available'
+                })
+    except Exception as e:
+        logger.error(f"Progress WebSocket error: {e}")
+        emit('progress_error', {'error': str(e)})
 
 if __name__ == '__main__':
     logger.info("Starting Enhanced Threat Modeling Pipeline Backend...")

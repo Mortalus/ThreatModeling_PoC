@@ -1,7 +1,0 @@
-System: Test Application
-External Entities: User, Admin
-Assets: Database, File Storage
-Processes: Web Server, API Server
-Data Flows:
-- From User to Web Server: Login data, Confidential, HTTPS, Password Auth
-- From Web Server to Database: User queries, PII, TLS, Service Account
