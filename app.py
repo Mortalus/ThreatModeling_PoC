@@ -3,6 +3,11 @@
 Enhanced Flask Backend for Threat Modeling Pipeline with Review System
 Includes quality checkpoints, confidence scoring, and collaborative review
 """
+
+# CRITICAL FIX: Load .env file FIRST before any other imports
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO
@@ -52,7 +57,11 @@ def create_app():
     pipeline_state = PipelineState()
     log_startup_info(runtime_config)
     
-    if not runtime_config['scw_secret_key']:
+    # ENHANCED LOGGING: Show environment status at startup
+    api_key = os.getenv('SCW_API_KEY') or os.getenv('SCW_SECRET_KEY')
+    if api_key:
+        logger.info(f"✅ API Key loaded successfully: ***{api_key[-4:]}")
+    else:
         logger.warning("⚠️ No API key found! The LLM calls will fail.")
         logger.warning("Please create a .env file with: SCW_SECRET_KEY=your_key_here")
     

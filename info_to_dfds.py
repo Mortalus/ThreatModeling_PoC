@@ -1,14 +1,25 @@
+#!/usr/bin/env python3
 """
-Service for loading and validating documents for DFD extraction.
+Enhanced DFD Extraction Script - Complete Version
+Extracts Data Flow Diagrams from uploaded documents using LLM-based analysis.
 """
-import os
-import glob
-import time
-import logging
-from typing import List, Tuple
-from utils.sample_documents import create_sample_requirements_document
 
-logger = logging.getLogger(__name__)
+import os
+import sys
+import json
+import logging
+from datetime import datetime
+from typing import List, Tuple, Dict, Any
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from config.settings import Config
+from services.dfd_extraction_service import DFDExtractionService
+from utils.logging_utils import logger, setup_logging
+from utils.progress_utils import write_progress, check_kill_signal, cleanup_progress_file
+from utils.sample_documents import create_sample_requirements_document
 
 class DocumentLoaderService:
     """Service for loading documents from Step 1 output."""
@@ -29,6 +40,7 @@ class DocumentLoaderService:
         step1_files = []
         
         # Pattern 1: YYYYMMDD_HHMMSS_extracted.txt
+        import glob
         extracted_files = glob.glob(os.path.join(output_dir, "*_extracted.txt"))
         step1_files.extend(extracted_files)
         
@@ -37,6 +49,7 @@ class DocumentLoaderService:
         step1_files.extend(session_files)
         
         # Also check for recent text files (within last 2 hours)
+        import time
         current_time = time.time()
         two_hours_ago = current_time - 7200
         
@@ -119,43 +132,156 @@ class DocumentLoaderService:
         """
         content_lower = content.lower()
         
-        # Check for diagram indicators (these suggest it's NOT requirements)
-        diagram_indicators = [
-            'graph td', 'graph tb', 'graph lr', 'flowchart',
-            'subgraph', 'classdef', '-->',
-            '<?xml', '<svg',
-            'digraph', 'node [', 'edge [',
-            'participant ', 'activate ', 'deactivate ',
-            '#!/usr/bin', 'import ', 'function ', 'class ',
-            'select * from', 'insert into', 'create table',
+        # Technical keywords that suggest this is requirements/design content
+        technical_keywords = [
+            'system', 'architecture', 'component', 'service', 'database',
+            'api', 'interface', 'security', 'authentication', 'authorization',
+            'user', 'admin', 'process', 'workflow', 'data', 'storage',
+            'server', 'client', 'web', 'mobile', 'application', 'platform',
+            'requirement', 'specification', 'design', 'implementation'
         ]
         
-        diagram_count = sum(1 for indicator in diagram_indicators if indicator in content_lower)
+        # Count technical keywords
+        keyword_count = sum(1 for keyword in technical_keywords if keyword in content_lower)
         
-        if diagram_count >= 2:
-            logger.info(f"File {filename} appears to be a diagram/code file (found {diagram_count} indicators)")
-            return False
-        
-        # Check for requirements/technical content indicators
-        requirements_indicators = [
-            'system', 'user', 'requirement', 'functional', 'non-functional',
-            'component', 'service', 'application', 'database', 'server',
-            'security', 'authentication', 'authorization', 'data flow',
-            'architecture', 'design', 'interface', 'api', 'endpoint',
-            'business', 'process', 'workflow', 'use case', 'scenario'
+        # Check for structured content indicators
+        structure_indicators = [
+            'requirements:', 'specification:', 'architecture:', 'design:',
+            'components:', 'services:', 'apis:', 'database:', 'security:',
+            '1.', '2.', '3.',  # Numbered lists
+            '- ', '* ',  # Bullet points
+            'external entities:', 'processes:', 'data flows:', 'assets:'
         ]
         
-        requirements_count = sum(1 for indicator in requirements_indicators 
-                               if indicator in content_lower)
+        structure_count = sum(1 for indicator in structure_indicators if indicator in content_lower)
         
-        if requirements_count < 3:
-            logger.info(f"File {filename} lacks requirements terminology (found {requirements_count} terms)")
-            return False
+        # Accept if we have enough technical keywords or clear structure
+        is_valid = keyword_count >= 3 or structure_count >= 2
         
-        # Check content length
-        if len(content) < 100:
-            logger.info(f"File {filename} too short for requirements ({len(content)} chars)")
-            return False
+        logger.debug(f"Content validation for {filename}: {keyword_count} keywords, {structure_count} structure indicators, valid: {is_valid}")
         
-        logger.info(f"File {filename} validated as requirements content ({requirements_count} indicators)")
-        return True
+        return is_valid
+
+def main():
+    """Main execution function."""
+    logger.info("=== Starting DFD Extraction ===")
+    write_progress(2, 0, 100, "Initializing DFD extraction", "Loading configuration")
+    
+    try:
+        # Get configuration
+        config = Config.get_config()
+        
+        # Ensure directories exist
+        Config.ensure_directories(config['output_dir'])
+        
+        logger.info(f"🔧 Configuration loaded:")
+        logger.info(f"   LLM Provider: {config['llm_provider']}")
+        logger.info(f"   LLM Model: {config['llm_model']}")
+        logger.info(f"   Input Dir: {config['input_dir']}")
+        logger.info(f"   Output Dir: {config['output_dir']}")
+        
+        # Initialize services
+        write_progress(2, 10, 100, "Initializing services", "Setting up document loader and extraction service")
+        
+        doc_loader = DocumentLoaderService(config)
+        extraction_service = DFDExtractionService(config)
+        
+        if check_kill_signal(2):
+            write_progress(2, 100, 100, "Cancelled", "User requested stop")
+            return 1
+        
+        # Load documents
+        write_progress(2, 20, 100, "Loading documents", "Searching for Step 1 output files")
+        
+        # Try both input_documents and output directories
+        documents1, doc_info1 = doc_loader.load_documents_from_step1(config['input_dir'])
+        documents2, doc_info2 = doc_loader.load_documents_from_step1(config['output_dir'])
+        
+        # Use whichever has documents
+        documents = documents1 if documents1 else documents2
+        doc_info = doc_info1 if doc_info1 else doc_info2
+        
+        if not documents:
+            logger.error("No documents found for processing")
+            write_progress(2, 100, 100, "Failed", "No input documents found")
+            return 1
+        
+        write_progress(2, 30, 100, "Documents loaded", f"Found {len(documents)} documents")
+        
+        if check_kill_signal(2):
+            write_progress(2, 100, 100, "Cancelled", "User requested stop")
+            return 1
+        
+        # Extract DFD
+        write_progress(2, 40, 100, "Extracting DFD", "Analyzing documents with LLM")
+        
+        logger.info(f"🚀 Starting DFD extraction from {len(documents)} documents")
+        result = extraction_service.extract_from_documents(documents, doc_info)
+        
+        if not result:
+            logger.error("DFD extraction failed - no result returned")
+            write_progress(2, 100, 100, "Failed", "DFD extraction returned no result")
+            return 1
+        
+        if check_kill_signal(2):
+            write_progress(2, 100, 100, "Cancelled", "User requested stop")
+            return 1
+        
+        # Save output
+        write_progress(2, 90, 100, "Saving output", "Writing DFD components to file")
+        
+        output_path = config.get('dfd_output_path') or os.path.join(config['output_dir'], 'dfd_components.json')
+        
+        logger.info(f"💾 Saving DFD to: {output_path}")
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        
+        # Verify the file was created and has content
+        if os.path.exists(output_path):
+            file_size = os.path.getsize(output_path)
+            logger.info(f"✅ DFD file created successfully: {file_size} bytes")
+            
+            # Log summary
+            if 'dfd' in result:
+                dfd = result['dfd']
+                logger.info(f"📊 DFD Summary:")
+                logger.info(f"   External Entities: {len(dfd.get('external_entities', []))}")
+                logger.info(f"   Processes: {len(dfd.get('processes', []))}")
+                logger.info(f"   Assets: {len(dfd.get('assets', []))}")
+                logger.info(f"   Data Flows: {len(dfd.get('data_flows', []))}")
+                logger.info(f"   Trust Boundaries: {len(dfd.get('trust_boundaries', []))}")
+        else:
+            logger.error(f"❌ Failed to create output file: {output_path}")
+            write_progress(2, 100, 100, "Failed", "Could not write output file")
+            return 1
+        
+        write_progress(2, 100, 100, "Complete", f"DFD extraction completed successfully")
+        cleanup_progress_file(2)
+        
+        logger.info("✅ DFD extraction completed successfully")
+        return 0
+        
+    except Exception as e:
+        logger.error(f"DFD extraction failed: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        write_progress(2, 100, 100, "Failed", str(e))
+        return 1
+
+if __name__ == "__main__":
+    # Set up logging
+    setup_logging()
+    
+    logger.info("--- Starting DFD Extraction Script ---")
+    
+    try:
+        exit_code = main()
+        sys.exit(exit_code)
+        
+    except KeyboardInterrupt:
+        logger.info("Script interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Script failed with error: {e}")
+        sys.exit(1)
