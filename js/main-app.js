@@ -185,61 +185,75 @@ const App = () => {
      * @param {number} stepIndex - Index of step to run
      */
     const runStep = React.useCallback(async (stepIndex) => {
-        const step = pipelineState.steps[stepIndex];
-        if (!step || loading) return;
+    const step = pipelineState.steps[stepIndex];
+    if (!step || loading) return;
 
-        // Check if previous step is completed
-        if (stepIndex > 0 && pipelineState.steps[stepIndex - 1].status !== 'completed') {
-            if (window.showNotification) {
-                window.showNotification('Previous step must be completed first', 'warning');
-            }
-            return;
+    // DEBUG: Log what step is being called
+    console.log('🚀 Running Step:', {
+        uiStepIndex: stepIndex,
+        backendStep: stepIndex + 1,
+        stepName: step.name,
+        previousStepStatus: stepIndex > 0 ? pipelineState.steps[stepIndex - 1].status : 'N/A'
+    });
+
+    // Check if previous step is completed
+    if (stepIndex > 0 && pipelineState.steps[stepIndex - 1].status !== 'completed') {
+        if (window.showNotification) {
+            window.showNotification('Previous step must be completed first', 'warning');
+        }
+        return;
+    }
+
+    setLoading(true);
+    setCurrentOperation(`Running ${step.name}...`);
+    updateStepState(stepIndex, 'running', null, 0);
+
+    try {
+        const payload = {
+            step: stepIndex + 1,  // Map UI steps to backend steps
+            data: stepIndex > 0 ? pipelineState.steps[stepIndex - 1].data : {}
+        };
+        
+        console.log('📡 API Call Payload:', payload);
+        
+        const response = await fetch(`${window.CoreUtilities?.API_BASE}/run-step`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
         }
 
-        setLoading(true);
-        setCurrentOperation(`Running ${step.name}...`);
-        updateStepState(stepIndex, 'running', null, 0);
-
-        try {
-            const response = await fetch(`${window.CoreUtilities?.API_BASE}/run-step`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    step: stepIndex,
-                    data: stepIndex > 0 ? pipelineState.steps[stepIndex - 1].data : null
-                })
-            });
-
-            const data = await response.json();
-            
-            if (!response.ok) {
-                throw new Error(data.error || 'Step execution failed');
-            }
-            
-            updateStepState(stepIndex, 'completed', data, 100);
-            
-            if (window.showNotification) {
-                window.showNotification(`${step.name} completed successfully!`, 'success');
-            }
-            
-            // Auto-advance to next step if available
-            if (stepIndex < pipelineState.steps.length - 1) {
-                setCurrentStep(stepIndex + 1);
-            }
-            
-            // Refresh review items
-            await fetchReviewItems();
-            
-        } catch (error) {
-            updateStepState(stepIndex, 'error');
-            if (window.showNotification) {
-                window.showNotification(`${step.name} failed: ${error.message}`, 'error');
-            }
-        } finally {
-            setLoading(false);
-            setCurrentOperation('');
+        const result = await response.json();
+        console.log('📡 API Response:', result);
+        
+        // CRITICAL: Mark step as completed with the returned data
+        updateStepState(stepIndex, 'completed', result, 100);
+        
+        if (window.showNotification) {
+            window.showNotification(`${step.name} completed successfully!`, 'success');
         }
-    }, [pipelineState.steps, loading, updateStepState, fetchReviewItems]);
+        
+        // Auto-advance to next step if available
+        if (stepIndex < pipelineState.steps.length - 1) {
+            setCurrentStep(stepIndex + 1);
+        }
+        
+    } catch (error) {
+        console.error('❌ Step execution error:', error);
+        updateStepState(stepIndex, 'error');
+        if (window.showNotification) {
+            window.showNotification(`${step.name} failed: ${error.message}`, 'error');
+        }
+        throw error;
+    } finally {
+        setLoading(false);
+        setCurrentOperation('');
+    }
+}, [pipelineState.steps, loading, updateStepState]);
 
     /**
      * Handle review submission
@@ -326,14 +340,39 @@ const App = () => {
         };
 
         const handleProgressUpdate = (data) => {
-            if (data.step !== undefined && data.step < pipelineState.steps.length) {
-                updateStepState(data.step, data.status || 'running', data.data, data.percentage || 0);
-                
-                if (data.message) {
-                    setCurrentOperation(data.message);
-                }
-            }
-        };
+    // DEBUG: Log all progress updates
+    console.log('🔍 Progress Update Received:', {
+        rawData: data,
+        backendStep: data.step,
+        frontendStepIndex: data.step !== undefined ? data.step - 1 : undefined,
+        currentPipelineSteps: pipelineState.steps.length,
+        stepNames: pipelineState.steps.map(s => s.name)
+    });
+    
+    // Convert backend step numbers (1,2,3,4,5) to frontend step numbers (0,1,2,3,4)
+    const frontendStepIndex = data.step !== undefined ? data.step - 1 : undefined;
+    
+    if (frontendStepIndex !== undefined && frontendStepIndex >= 0 && frontendStepIndex < pipelineState.steps.length) {
+        console.log('✅ Updating step:', {
+            frontendStepIndex,
+            stepName: pipelineState.steps[frontendStepIndex].name,
+            status: data.status || 'running',
+            percentage: data.percentage || 0
+        });
+        
+        updateStepState(frontendStepIndex, data.status || 'running', data.data, data.percentage || 0);
+        
+        if (data.message) {
+            setCurrentOperation(data.message);
+        }
+    } else {
+        console.log('❌ Invalid step index:', {
+            frontendStepIndex,
+            pipelineStepsLength: pipelineState.steps.length,
+            rawStep: data.step
+        });
+    }
+};
 
         const handleReviewUpdate = (data) => {
             if (data.action === 'new_item') {

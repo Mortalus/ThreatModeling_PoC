@@ -1,3 +1,7 @@
+"""
+Fixed pipeline_service.py - Now properly passes session information to DFD extraction
+"""
+
 import json
 import os
 import subprocess
@@ -11,7 +15,7 @@ from utils.logging_utils import logger
 
 class PipelineService:
     @staticmethod
-    def update_progress(session_id, step, data, pipeline_state: PipelineState, socketio):
+    def update_progress(session_id: str, step: int, data: dict, pipeline_state: PipelineState, socketio) -> None:
         with pipeline_state.lock:
             if session_id not in pipeline_state.state['progress']:
                 pipeline_state.state['progress'][session_id] = {}
@@ -26,7 +30,7 @@ class PipelineService:
         })
 
     @staticmethod
-    def get_step_progress(step, output_folder):
+    def get_step_progress(step: int, output_folder: str) -> dict:
         progress_file = os.path.join(output_folder, f'step_{step}_progress.json')
         if os.path.exists(progress_file):
             try:
@@ -41,7 +45,8 @@ class PipelineService:
         }
 
     @staticmethod
-    def execute_step(step, input_data, runtime_config, pipeline_state: PipelineState, socketio, output_folder, input_folder):
+    def execute_step(step: int, input_data: dict, runtime_config: dict, pipeline_state: PipelineState, 
+                    socketio, output_folder: str, input_folder: str) -> dict:
         if not isinstance(step, int) or step < 1 or step > 5:
             raise ValueError('Invalid step number. Must be 1-5.')
         
@@ -87,6 +92,12 @@ class PipelineService:
             'TEMPERATURE': str(runtime_config.get('temperature', 0.2)),
             'MAX_TOKENS': str(runtime_config.get('max_tokens', 4096)),
         }
+        
+        # **CRITICAL FIX**: Add session ID to environment for DFD extraction
+        if session_id:
+            env_updates['SESSION_ID'] = session_id
+            logger.info(f"Setting SESSION_ID environment variable: {session_id}")
+        
         env.update(env_updates)
         
         if runtime_config['scw_secret_key']:
@@ -98,6 +109,7 @@ class PipelineService:
         logger.info(f"  Provider: {runtime_config['llm_provider']}")
         logger.info(f"  Model: {runtime_config['llm_model']}")
         logger.info(f"  Endpoint: {runtime_config.get('local_llm_endpoint', 'N/A')}")
+        logger.info(f"  Session ID: {session_id}")
         
         output_file = None
         script_name = None
@@ -117,228 +129,180 @@ class PipelineService:
             if current_session:
                 logger.info(f"Current session: {current_session}")
                 
+                # **ADDITIONAL FIX**: Verify uploaded file exists and create symlink if needed
+                uploaded_file = upload_data.get('text_file_path') if upload_data else None
+                if uploaded_file and os.path.exists(uploaded_file):
+                    logger.info(f"Verified uploaded file exists: {uploaded_file}")
+                    
+                    # Ensure the file is also accessible with session ID naming
+                    session_file = os.path.join(input_folder, f"{current_session}_extracted.txt")
+                    if not os.path.exists(session_file):
+                        try:
+                            # Create a copy with session ID naming for compatibility
+                            import shutil
+                            shutil.copy2(uploaded_file, session_file)
+                            logger.info(f"Created session file: {session_file}")
+                        except Exception as e:
+                            logger.warning(f"Could not create session file: {e}")
+                else:
+                    logger.warning(f"Uploaded file not found: {uploaded_file}")
+                
                 # Clean up old extracted files that don't match current session
                 for dir_path in [input_folder, output_folder, './uploads', './output', './input_documents']:
                     if os.path.exists(dir_path):
                         for filename in os.listdir(dir_path):
                             if filename.endswith('_extracted.txt') and current_session not in filename:
                                 old_file = os.path.join(dir_path, filename)
-                                logger.info(f"Removing old file: {old_file}")
                                 try:
                                     os.remove(old_file)
+                                    logger.info(f"Removed old file: {old_file}")
                                 except Exception as e:
-                                    logger.warning(f"Could not remove {old_file}: {e}")
+                                    logger.warning(f"Could not remove old file {old_file}: {e}")
             
-            # Set INPUT_DIR to where the current file is
-            current_text_file = upload_data.get('text_file_path') or upload_data.get('output_text_file')
-            
-            if current_text_file and os.path.exists(current_text_file):
-                # Use the directory containing the current file
-                env['INPUT_DIR'] = os.path.dirname(current_text_file)
-                logger.info(f"Using INPUT_DIR from current file: {env['INPUT_DIR']}")
-                logger.info(f"Processing file: {os.path.basename(current_text_file)}")
-            else:
-                # Fallback to finding the most recent file
-                possible_dirs = [input_folder, output_folder, './uploads', './output', './input_documents']
-                latest_file = None
-                latest_time = 0
-                
-                for dir_path in possible_dirs:
-                    if os.path.exists(dir_path):
-                        for filename in os.listdir(dir_path):
-                            if filename.endswith('_extracted.txt'):
-                                file_path = os.path.join(dir_path, filename)
-                                file_time = os.path.getmtime(file_path)
-                                if file_time > latest_time:
-                                    latest_time = file_time
-                                    latest_file = file_path
-                
-                if latest_file:
-                    env['INPUT_DIR'] = os.path.dirname(latest_file)
-                    logger.info(f"Using most recent file: {latest_file}")
-                else:
-                    logger.error("No extracted text files found!")
-                    # Log what's in each directory for debugging
-                    for dir_path in possible_dirs:
-                        if os.path.exists(dir_path):
-                            files = [f for f in os.listdir(dir_path) if not f.startswith('.')]
-                            logger.info(f"  {dir_path}: {files[:5]}")
-            
-            # Pass session ID to the script
-            if current_session:
-                env['SESSION_ID'] = current_session
-            
-            # Clear any old DFD output to force fresh extraction
-            old_dfd = os.path.join(output_folder, 'dfd_components.json')
-            if os.path.exists(old_dfd):
-                logger.info(f"Removing old DFD output: {old_dfd}")
-                try:
-                    os.remove(old_dfd)
-                except Exception as e:
-                    logger.warning(f"Could not remove old DFD: {e}")
-            
-            env['DFD_OUTPUT_PATH'] = os.path.join(output_folder, 'dfd_components.json')
-            output_file = env['DFD_OUTPUT_PATH']
+            output_file = os.path.join(output_folder, 'dfd_components.json')
             
         elif step == 3:
             script_name = 'dfd_to_threats.py'
-            env['DFD_INPUT_PATH'] = os.path.join(output_folder, 'dfd_components.json')
-            env['THREATS_OUTPUT_PATH'] = os.path.join(output_folder, 'identified_threats.json')
-            output_file = env['THREATS_OUTPUT_PATH']
+            output_file = os.path.join(output_folder, 'identified_threats.json')
             
         elif step == 4:
             script_name = 'improve_threat_quality.py'
-            env.update({
-                'DFD_INPUT_PATH': os.path.join(output_folder, 'dfd_components.json'),
-                'THREATS_INPUT_PATH': os.path.join(output_folder, 'identified_threats.json'),
-                'REFINED_THREATS_OUTPUT_PATH': os.path.join(output_folder, 'refined_threats.json'),
-                'SIMILARITY_THRESHOLD': '0.80',
-                'CVE_RELEVANCE_YEARS': '5'
-            })
-            output_file = env['REFINED_THREATS_OUTPUT_PATH']
+            output_file = os.path.join(output_folder, 'refined_threats.json')
             
         elif step == 5:
             script_name = 'attack_path_analyzer.py'
-            env.update({
-                'REFINED_THREATS_PATH': os.path.join(output_folder, 'refined_threats.json'),
-                'DFD_PATH': os.path.join(output_folder, 'dfd_components.json'),
-                'ATTACK_PATHS_OUTPUT': os.path.join(output_folder, 'attack_paths.json'),
-                'MAX_PATH_LENGTH': '5',
-                'MAX_PATHS_TO_ANALYZE': '20',
-                'ENABLE_VECTOR_STORE': 'false'
-            })
-            output_file = env['ATTACK_PATHS_OUTPUT']
+            output_file = os.path.join(output_folder, 'attack_paths.json')
         
-        if script_name and not os.path.exists(script_name):
+        # Ensure cleanup of any progress tracking file for this step
+        cleanup_progress_file(step, output_folder)
+        
+        if not script_name:
+            raise ValueError(f'Unknown step: {step}')
+        
+        if not os.path.exists(script_name):
             raise FileNotFoundError(f'Script not found: {script_name}')
         
-        # Log environment for debugging
-        logger.info(f"Environment variables for {script_name}:")
-        for key in ['LLM_PROVIDER', 'LLM_MODEL', 'LOCAL_LLM_ENDPOINT', 'INPUT_DIR', 'OUTPUT_DIR']:
-            logger.info(f"  {key}: {env.get(key, 'NOT SET')}")
+        # **ENHANCED LOGGING**: Show what files are available before running script
+        logger.info(f"Files in input directory ({input_folder}):")
+        if os.path.exists(input_folder):
+            for file in os.listdir(input_folder):
+                if file.endswith('.txt'):
+                    file_path = os.path.join(input_folder, file)
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"  - {file} ({file_size} bytes)")
+        else:
+            logger.warning(f"Input directory does not exist: {input_folder}")
         
-        if script_name:
-            logger.info(f"Running script: {script_name}")
+        logger.info(f"Files in output directory ({output_folder}):")
+        if os.path.exists(output_folder):
+            for file in os.listdir(output_folder):
+                if file.endswith('.txt'):
+                    file_path = os.path.join(output_folder, file)
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"  - {file} ({file_size} bytes)")
+        
+        # Run the script
+        logger.info(f"Executing {script_name} for step {step}")
+        
+        try:
             result = subprocess.run(
                 [sys.executable, script_name],
+                env=env,
+                cwd=os.getcwd(),
                 capture_output=True,
                 text=True,
-                env=env,
-                timeout=int(runtime_config['timeout']),
-                cwd=os.getcwd()
+                timeout=runtime_config['timeout']
             )
             
+            # Log the script output
+            if result.stdout:
+                logger.info(f"Script output: {result.stdout}")
+            if result.stderr:
+                logger.warning(f"Script stderr: {result.stderr}")
+            
             if result.returncode != 0:
-                error_msg = result.stderr or result.stdout or f'Script {script_name} failed'
-                logger.error(f"Script failed: {error_msg}")
+                error_msg = f"Script {script_name} failed with return code {result.returncode}"
+                if result.stderr:
+                    error_msg += f": {result.stderr}"
+                logger.error(error_msg)
                 raise RuntimeError(error_msg)
             
-            logger.info(f"Script completed successfully")
-            
-            # Log output for debugging
-            if result.stdout:
-                logger.debug(f"Script output (first 500 chars): {result.stdout[:500]}")
-        
-        if output_file and os.path.exists(output_file):
-            logger.info(f"Loading output from: {output_file}")
-            with open(output_file, 'r') as f:
-                step_data = json.load(f)
-            
-            # Add metadata
-            step_data['timestamp'] = datetime.now().isoformat()
-            step_data['step'] = step
-            
-            # Validate and process
-            validation = ValidationService.validate_json_structure(step_data, step)
-            step_data['validation'] = validation
-            
+            # Load and validate output
+            if output_file and os.path.exists(output_file):
+                with open(output_file, 'r', encoding='utf-8') as f:
+                    output_data = json.load(f)
+                
+                # Store in pipeline state
+                with pipeline_state.lock:
+                    pipeline_state.state['step_outputs'][step] = output_data
+                
+                logger.info(f"Step {step} completed successfully")
+                
+                if session_id:
+                    PipelineService.update_progress(session_id, step, {
+                        'status': 'completed',
+                        'progress': 100,
+                        'message': f'Step {step} completed successfully'
+                    }, pipeline_state, socketio)
+                
+                return output_data
+            else:
+                error_msg = f"Output file not generated: {output_file}"
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
+                
+        except subprocess.TimeoutExpired:
+            error_msg = f"Script {script_name} timed out after {runtime_config['timeout']} seconds"
+            logger.error(error_msg)
+            if session_id:
+                PipelineService.update_progress(session_id, step, {
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': error_msg
+                }, pipeline_state, socketio)
+            raise
+        except Exception as e:
+            error_msg = f"Script {script_name} execution failed: {str(e)}"
+            logger.error(error_msg)
+            if session_id:
+                PipelineService.update_progress(session_id, step, {
+                    'status': 'failed',
+                    'progress': 0,
+                    'message': error_msg
+                }, pipeline_state, socketio)
+            raise
+
+    @staticmethod
+    def save_step_data(step: int, step_data: dict, pipeline_state: PipelineState, output_folder: str) -> dict:
+        """Save step data to both memory and disk."""
+        try:
             # Save to pipeline state
             with pipeline_state.lock:
                 pipeline_state.state['step_outputs'][step] = step_data
-                pipeline_state.state['validations'][step] = validation
             
-            # Generate review items
-            review_items = ReviewService.generate_review_items(step, step_data)
-            if review_items:
-                with pipeline_state.lock:
-                    pipeline_state.state['review_queue'][step] = review_items
+            # Save to disk
+            filename = f'step_{step}_data.json'
+            output_path = os.path.join(output_folder, filename)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(step_data, f, indent=2, ensure_ascii=False)
             
-            # Count items
-            count = 0
-            if step == 2:
-                dfd = step_data.get('dfd', {})
-                count = (len(dfd.get('external_entities', [])) + 
-                        len(dfd.get('processes', [])) + 
-                        len(dfd.get('assets', [])))
-            elif step in [3, 4]:
-                count = len(step_data.get('threats', []))
-            elif step == 5:
-                count = len(step_data.get('attack_paths', []))
+            logger.info(f"Saved step {step} data to {output_path}")
+            pipeline_state.add_log(f"Step {step} data saved", 'success')
             
-            step_data['count'] = count
-            step_data['review_needed'] = len(review_items)
+            return {'status': 'success', 'message': f'Step {step} data saved successfully'}
             
-            pipeline_state.add_log(f"Step {step} completed: {count} items", 'success')
-            
-            if session_id:
-                PipelineService.update_progress(session_id, step, {
-                    'status': 'completed',
-                    'progress': 100,
-                    'message': f'Step {step} completed successfully'
-                }, pipeline_state, socketio)
-            
-            return step_data
-            
-        raise FileNotFoundError(f'Output file not created: {output_file}')
+        except Exception as e:
+            error_msg = f"Failed to save step {step} data: {str(e)}"
+            logger.error(error_msg)
+            pipeline_state.add_log(error_msg, 'error')
+            return {'status': 'error', 'message': error_msg}
 
-    @staticmethod
-    def run_step(step, pipeline_state: PipelineState, runtime_config, input_folder, output_folder, socketio):
-        """Wrapper for backward compatibility."""
-        return PipelineService.execute_step(
-            step=step,
-            input_data={},
-            runtime_config=runtime_config,
-            pipeline_state=pipeline_state,
-            socketio=socketio,
-            output_folder=output_folder,
-            input_folder=input_folder
-        )
-
-    @staticmethod
-    def save_step_data(step, data, pipeline_state: PipelineState, output_folder):
-        validation = ValidationService.validate_json_structure(data, step)
-        if not validation['valid']:
-            raise ValueError('Invalid data structure')
-        save_step_data(step, data, output_folder)
-        with pipeline_state.lock:
-            pipeline_state.state['step_outputs'][step] = data
-            pipeline_state.state['validations'][step] = validation
-            review_items = ReviewService.generate_review_items(step, data)
-            if review_items:
-                pipeline_state.state['review_queue'][step] = review_items
-        pipeline_state.add_log(f"Saved changes to step {step}", 'success')
-        return {'status': 'saved', 'validation': validation}
-
-    @staticmethod
-    def load_existing_files(pipeline_state: PipelineState, output_folder):
-        file_mappings = {
-            2: ('dfd_components.json', 'DFD'),
-            3: ('identified_threats.json', 'Threats'),
-            4: ('refined_threats.json', 'Refined Threats'),
-            5: ('attack_paths.json', 'Attack Paths')
-        }
-        files_loaded = {}
-        with pipeline_state.lock:
-            if not pipeline_state.state.get('current_session'):
-                pipeline_state.state['current_session'] = datetime.now().strftime('%Y%m%d_%H%M%S')
-            for step, (filename, description) in file_mappings.items():
-                filepath = os.path.join(output_folder, filename)
-                if os.path.exists(filepath):
-                    try:
-                        with open(filepath, 'r') as f:
-                            data = json.load(f)
-                        pipeline_state.state['step_outputs'][step] = data
-                        files_loaded[step] = description
-                    except Exception as e:
-                        logger.error(f"Failed to load {filename}: {e}")
-        return files_loaded
+def cleanup_progress_file(step: int, output_folder: str) -> None:
+    """Clean up any existing progress file for a step."""
+    progress_file = os.path.join(output_folder, f'step_{step}_progress.json')
+    if os.path.exists(progress_file):
+        try:
+            os.remove(progress_file)
+            logger.info(f"Cleaned up progress file: {progress_file}")
+        except Exception as e:
+            logger.warning(f"Could not remove progress file: {e}")

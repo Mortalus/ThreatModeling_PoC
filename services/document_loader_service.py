@@ -1,26 +1,13 @@
-#!/usr/bin/env python3
 """
-Enhanced DFD Extraction Script - Complete Version
-Extracts Data Flow Diagrams from uploaded documents using LLM-based analysis.
+Document Loader Service - Extracted from info_to_dfds.py for better modularity
+Enhanced with better session handling and file discovery
 """
 
 import os
-import sys
-import json
-import logging
 import glob
 import time
-from datetime import datetime
-from typing import List, Tuple, Dict, Any
-from pathlib import Path
-
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from config.settings import Config
-from services.dfd_extraction_service import DFDExtractionService
-from utils.logging_utils import logger, setup_logging
-from utils.progress_utils import write_progress, check_kill_signal, cleanup_progress_file
+from typing import List, Tuple
+from utils.logging_utils import logger
 from utils.sample_documents import create_sample_requirements_document
 
 class DocumentLoaderService:
@@ -228,145 +215,3 @@ class DocumentLoaderService:
             logger.warning(f"⚠️  {filename} has low relevance but will be processed anyway")
         
         return True  # Always return True to process all uploaded content
-
-def main():
-    """Main function for DFD extraction."""
-    # Setup logging
-    setup_logging()
-    
-    logger.info("=== Starting DFD Extraction ===")
-    def debug_execution():
-        """Debug what's happening in Flask execution."""
-        debug_info = {
-            'timestamp': datetime.now().isoformat(),
-            'session_id': os.getenv('SESSION_ID', 'NOT_SET'),
-            'input_dir': os.getenv('INPUT_DIR', 'NOT_SET'),
-            'output_dir': os.getenv('OUTPUT_DIR', 'NOT_SET'),
-            'cwd': os.getcwd(),
-        }
-        
-        # Check files in directories
-        for dir_name, dir_path in [('input', './input_documents'), ('output', './output')]:
-            if os.path.exists(dir_path):
-                txt_files = [f for f in os.listdir(dir_path) if f.endswith('.txt')]
-                debug_info[f'{dir_name}_files'] = txt_files
-        
-        # Save debug info
-        debug_file = './output/dfd_execution_debug.json'
-        with open(debug_file, 'w') as f:
-            json.dump(debug_info, f, indent=2)
-        
-        logger.info(f"🔍 FLASK DEBUG: SESSION_ID = {debug_info['session_id']}")
-        logger.info(f"🔍 FLASK DEBUG: INPUT_DIR = {debug_info['input_dir']}")
-        logger.info(f"🔍 FLASK DEBUG: Files found = {debug_info}")
-    debug_execution()
-    write_progress(2, 0, 100, "Initializing DFD extraction", "Loading configuration")
-    
-    try:
-        # Get configuration
-        config = Config.get_config()
-        
-        # Ensure directories exist
-        Config.ensure_directories(config['output_dir'])
-        
-        logger.info(f"🔧 Configuration loaded:")
-        logger.info(f"   LLM Provider: {config['llm_provider']}")
-        logger.info(f"   LLM Model: {config['llm_model']}")
-        logger.info(f"   Input Dir: {config['input_dir']}")
-        logger.info(f"   Output Dir: {config['output_dir']}")
-        logger.info(f"   Session ID: {os.getenv('SESSION_ID', 'Not set')}")
-        
-        # Initialize services
-        write_progress(2, 10, 100, "Initializing services", "Setting up document loader and extraction service")
-        
-        doc_loader = DocumentLoaderService(config)
-        extraction_service = DFDExtractionService(config)
-        
-        if check_kill_signal(2):
-            write_progress(2, 100, 100, "Cancelled", "User requested stop")
-            return 1
-        
-        # Load documents
-        write_progress(2, 20, 100, "Loading documents", "Searching for Step 1 output files")
-        
-        # Try both input_documents and output directories
-        documents1, doc_info1 = doc_loader.load_documents_from_step1(config['input_dir'])
-        documents2, doc_info2 = doc_loader.load_documents_from_step1(config['output_dir'])
-        
-        # Use whichever has documents
-        documents = documents1 if documents1 else documents2
-        doc_info = doc_info1 if doc_info1 else doc_info2
-        
-        if not documents:
-            logger.error("No documents found for processing")
-            write_progress(2, 100, 100, "Failed", "No input documents found")
-            return 1
-        
-        write_progress(2, 30, 100, "Documents loaded", f"Found {len(documents)} documents")
-        
-        if check_kill_signal(2):
-            write_progress(2, 100, 100, "Cancelled", "User requested stop")
-            return 1
-        
-        # Extract DFD
-        write_progress(2, 40, 100, "Extracting DFD", "Analyzing documents with LLM")
-        
-        logger.info(f"🚀 Starting DFD extraction from {len(documents)} documents")
-        result = extraction_service.extract_from_documents(documents, doc_info)
-        
-        if not result:
-            logger.error("DFD extraction failed - no result returned")
-            write_progress(2, 100, 100, "Failed", "DFD extraction returned no result")
-            return 1
-        
-        if check_kill_signal(2):
-            write_progress(2, 100, 100, "Cancelled", "User requested stop")
-            return 1
-        
-        # Save output
-        write_progress(2, 90, 100, "Saving output", "Writing DFD components to file")
-        
-        output_path = config.get('dfd_output_path') or os.path.join(config['output_dir'], 'dfd_components.json')
-        
-        logger.info(f"💾 Saving DFD to: {output_path}")
-        
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
-        
-        # Verify the file was created and has content
-        if os.path.exists(output_path):
-            file_size = os.path.getsize(output_path)
-            logger.info(f"✅ DFD file created successfully: {file_size} bytes")
-            
-            # Log some statistics
-            if 'dfd' in result and isinstance(result['dfd'], dict):
-                dfd = result['dfd']
-                stats = {
-                    'external_entities': len(dfd.get('external_entities', [])),
-                    'processes': len(dfd.get('processes', [])),
-                    'assets': len(dfd.get('assets', [])),
-                    'data_flows': len(dfd.get('data_flows', [])),
-                    'trust_boundaries': len(dfd.get('trust_boundaries', []))
-                }
-                logger.info(f"📊 DFD Statistics: {stats}")
-            
-            write_progress(2, 100, 100, "Completed", f"DFD extraction completed successfully")
-        else:
-            logger.error(f"Output file was not created: {output_path}")
-            write_progress(2, 100, 100, "Failed", "Output file was not created")
-            return 1
-        
-        logger.info("✅ DFD extraction completed successfully")
-        return 0
-        
-    except Exception as e:
-        logger.error(f"DFD extraction failed: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        write_progress(2, 100, 100, "Failed", f"Error: {str(e)}")
-        return 1
-    
-    finally:
-        cleanup_progress_file(2)
-if __name__ == "__main__":
-    sys.exit(main())

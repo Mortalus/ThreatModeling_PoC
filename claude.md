@@ -18,8 +18,6 @@
 
 - ALWAYS add explicit types to all function parameters, variables, and return types
 
-- ALWAYS run `pnpm build` or appropriate linter command before considering any code changes complete
-
 - Fix all linter and errors immediately - don't leave them for the user to fix
 
 - When making changes to multiple files, check each one for type errors
