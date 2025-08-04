@@ -99,6 +99,7 @@ def create_app():
     register_review_routes(app, pipeline_state, socketio, OUTPUT_FOLDER)
     register_pipeline_routes(app, pipeline_state, runtime_config, socketio, OUTPUT_FOLDER, INPUT_FOLDER)
     register_websocket_handlers(socketio, pipeline_state)
+    app.register_blueprint(config_bp)
     
     logger.info("Starting Enhanced Threat Modeling Pipeline Backend...")
     logger.info("Review system: ENABLED")
