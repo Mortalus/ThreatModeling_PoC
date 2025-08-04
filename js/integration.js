@@ -88,7 +88,7 @@ function openEnhancedSettingsModal() {
     const ReactDOM = window.ReactDOM;
     
     // Corrected path to the SettingsModal component
-    import('./SettingsModal.js').then(({ SettingsModal }) => {
+    import('./SettingsModal.tsx').then(({ SettingsModal }) => {
       const App = () => {
         const [isOpen, setIsOpen] = React.useState(true);
         window.setSettingsModalOpen = setIsOpen;

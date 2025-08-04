@@ -131,10 +131,10 @@
         try {
             // Try to load the enhanced settings modules using absolute paths
             const modules = await Promise.all([
-                import('/js/constants.js'),
-                import('/js/storage.js'),
-                import('/js/validation.js'),
-                import('/js/integration.js')
+                import('./constants.js'),
+                import('./storage.js'),
+                import('./validation.js'),
+                import('./integration.js')
             ]);
             
             enhancedSettingsModule = {
