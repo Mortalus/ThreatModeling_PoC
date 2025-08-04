@@ -15,15 +15,17 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
-    <!-- Application Styles and Scripts -->
     <link rel="stylesheet" href="css/main.css">
-    <script src="js/main.js"></script>
+    <link rel="stylesheet" href="css/settings.css">
+    
+    <script src="js/main.js" defer></script>
 
 </head>
 <body>
-    <div id="root"></div>
+    <div id="root">
+        <button onclick="openSettingsModal()" style="margin: 20px; padding: 10px;">Open Settings</button>
+    </div>
 
-    <!-- Settings Modal -->
     <div id="settingsModal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
@@ -31,142 +33,142 @@
                 <span class="close" onclick="closeSettingsModal()">&times;</span>
             </div>
             <div class="modal-body">
-                <!-- LLM Configuration -->
                 <div class="settings-section">
                     <h3>LLM Configuration</h3>
                     <div class="form-group">
                         <label for="llm-provider">LLM Provider:</label>
-                        <select id="llm-provider" class="form-select">
+                        <select id="llm-provider" class="form-select" onchange="updateProviderFields()">
                             <option value="scaleway">Scaleway</option>
+                            <option value="azure">Azure OpenAI</option>
                             <option value="ollama">Ollama (Local)</option>
                         </select>
                     </div>
                     <div class="form-group">
                         <label for="llm-model">Model:</label>
-                        <input type="text" id="llm-model" class="form-input" value="llama-3.3-70b-instruct">
+                        <select id="llm-model" class="form-select">
+                            <option value="llama-3.3-70b-instruct">llama-3.3-70b-instruct</option>
+                            <option value="llama-3.1-8b-instruct">llama-3.1-8b-instruct</option>
+                            <option value="llama-3.1-70b-instruct">llama-3.1-70b-instruct</option>
+                            <option value="mistral-nemo-instruct-2407">mistral-nemo-instruct-2407</option>
+                        </select>
                     </div>
-                    <div class="form-group" id="api-key-group">
-                        <label for="scw-api-key">Scaleway API Key:</label>
-                        <input type="password" id="scw-api-key" class="form-input" placeholder="Enter your API key">
+                    <div class="form-group" id="azure-endpoint-group" style="display: none;">
+                        <label for="azure-endpoint">Azure Endpoint:</label>
+                        <input type="text" id="azure-endpoint" class="form-input" placeholder="https://your-resource.openai.azure.com">
+                        <small class="form-help">Your Azure OpenAI endpoint URL</small>
                     </div>
                     <div class="form-group" id="local-endpoint-group" style="display: none;">
                         <label for="local-endpoint">Local LLM Endpoint:</label>
-                        <input type="text" id="local-endpoint" class="form-input" value="http://localhost:11434/api/generate">
+                        <input type="text" id="local-endpoint" class="form-input" value="http://localhost:11434">
+                        <small class="form-help">Ollama server endpoint</small>
                     </div>
                 </div>
 
-                <!-- Processing Parameters -->
                 <div class="settings-section">
                     <h3>Processing Parameters</h3>
                     <div class="form-group">
                         <label for="timeout">Timeout (seconds):</label>
-                        <input type="number" id="timeout" class="form-input" value="5000" min="60" max="10000">
+                        <input type="number" id="timeout" class="form-input" value="300" min="10" max="3600">
+                        <small class="form-help">Maximum time for pipeline execution</small>
                     </div>
                     <div class="form-group">
-                        <label for="temperature">Temperature (0-1):</label>
-                        <input type="number" id="temperature" class="form-input" value="0.2" min="0" max="1" step="0.1">
+                        <label for="temperature">Temperature:</label>
+                        <input type="number" id="temperature" class="form-input" value="0.2" min="0" max="2" step="0.1">
+                        <small class="form-help">Controls randomness in LLM responses (0-2)</small>
                     </div>
                     <div class="form-group">
                         <label for="max-tokens">Max Tokens:</label>
-                        <input type="number" id="max-tokens" class="form-input" value="4096" min="1000" max="8192">
+                        <input type="number" id="max-tokens" class="form-input" value="4096" min="100" max="32000" step="100">
+                        <small class="form-help">Maximum response length</small>
                     </div>
                 </div>
 
-                <!-- Async/Performance Configuration -->
                 <div class="settings-section">
-                    <h3>Performance & Execution</h3>
-                    <div class="checkbox-group">
+                    <h3>Performance Options</h3>
+                    <div class="form-group">
                         <label>
-                            <input type="checkbox" id="enable-async-processing" checked>
-                            Enable Async Processing (Recommended)
+                            <input type="checkbox" id="enable-async-processing" checked onchange="updateAsyncFields()">
+                            Enable Async Processing
                         </label>
-                        <div class="form-help">Enables concurrent LLM calls for faster threat generation. Disable for debugging.</div>
+                        <small class="form-help">Process multiple LLM calls concurrently for faster execution</small>
+                    </div>
+                    <div class="form-group" id="concurrent-calls-group">
+                        <label for="max-concurrent-calls">Max Concurrent Calls:</label>
+                        <input type="number" id="max-concurrent-calls" class="form-input" value="5" min="1" max="50">
+                        <small class="form-help">Number of simultaneous LLM calls</small>
                     </div>
                     <div class="form-group">
-                        <label for="max-concurrent-calls">Max Concurrent LLM Calls:</label>
-                        <input type="number" id="max-concurrent-calls" class="form-input" value="5" min="1" max="20">
-                        <div class="form-help">Number of simultaneous LLM requests (async mode only)</div>
-                    </div>
-                    <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="detailed-llm-logging" checked>
                             Detailed LLM Logging
                         </label>
-                        <div class="form-help">Log every LLM request/response with progress percentages</div>
+                        <small class="form-help">Show detailed progress for each LLM call</small>
                     </div>
                 </div>
 
-                <!-- Debug Configuration -->
                 <div class="settings-section">
-                    <h3>Debug & Fallback Options</h3>
-                    <div class="checkbox-group">
+                    <h3>Debug Options</h3>
+                    <div class="form-group">
                         <label>
-                            <input type="checkbox" id="debug-mode">
-                            🔧 Debug Mode
+                            <input type="checkbox" id="debug-mode" onchange="updateDebugFields()">
+                            Enable Debug Mode
                         </label>
-                        <div class="form-help">Use rule-based extraction when LLM fails. Disable for production.</div>
+                        <small class="form-help">Show detailed debugging information in console</small>
                     </div>
-                    <div class="checkbox-group">
+                    <div class="form-group">
                         <label>
                             <input type="checkbox" id="force-rule-based">
-                            Force Rule-Based Extraction
+                            Force Rule-Based Processing
                         </label>
-                        <div class="form-help">Skip LLM entirely and use only rule-based extraction</div>
+                        <small class="form-help">Use predefined rules instead of LLM calls (for testing/demos)</small>
                     </div>
-                    <div class="checkbox-group">
+                    <div class="form-group">
                         <label>
                             <input type="checkbox" id="verbose-error-reporting" checked>
                             Verbose Error Reporting
                         </label>
-                        <div class="form-help">Show detailed error messages and stack traces</div>
+                        <small class="form-help">Show detailed error messages and stack traces</small>
                     </div>
                 </div>
 
-                <!-- Feature Flags -->
                 <div class="settings-section">
-                    <h3>Features</h3>
+                    <h3>Feature Flags</h3>
                     <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="enable-quality-check" checked>
-                            Enable DFD Quality Check
+                            <span>
+                                <strong>Enable Quality Check</strong>
+                                <small class="form-help">Validate extracted DFD components</small>
+                            </span>
                         </label>
-                    </div>
-                    <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="enable-multi-pass" checked>
-                            Enable Multi-Pass Processing
+                            <span>
+                                <strong>Enable Multi-Pass Extraction</strong>
+                                <small class="form-help">Use multiple extraction passes for better results</small>
+                            </span>
                         </label>
-                    </div>
-                    <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="enable-mermaid" checked>
-                            Enable Mermaid Diagrams
+                            <span>
+                                <strong>Enable Mermaid Diagrams</strong>
+                                <small class="form-help">Generate visual attack path diagrams</small>
+                            </span>
                         </label>
-                    </div>
-                    <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="enable-llm-enrichment" checked>
-                            Enable LLM Enrichment
+                            <span>
+                                <strong>Enable LLM Enrichment</strong>
+                                <small class="form-help">Use LLM to enhance threat descriptions</small>
+                            </span>
                         </label>
-                    </div>
-                    <div class="checkbox-group">
                         <label>
                             <input type="checkbox" id="mitre-enabled" checked>
-                            Enable MITRE ATT&CK Mapping
+                            <span>
+                                <strong>Enable MITRE ATT&CK Mapping</strong>
+                                <small class="form-help">Map threats to MITRE framework</small>
+                            </span>
                         </label>
-                    </div>
-                </div>
-
-                <!-- Directories -->
-                <div class="settings-section">
-                    <h3>Directories</h3>
-                    <div class="form-group">
-                        <label for="output-dir">Output Directory:</label>
-                        <input type="text" id="output-dir" class="form-input" value="./output" readonly>
-                    </div>
-                    <div class="form-group">
-                        <label for="input-dir">Input Directory:</label>
-                        <input type="text" id="input-dir" class="form-input" value="./input_documents" readonly>
                     </div>
                 </div>
             </div>
@@ -177,51 +179,22 @@
         </div>
     </div>
 
-    <style>
-    /* Enhanced form styling for new options */
-    .form-help {
-        font-size: 0.85em;
-        color: var(--text-secondary, #666);
-        margin-top: 0.25rem;
-        line-height: 1.4;
-    }
-    
-    .checkbox-group {
-        display: flex;
-        flex-direction: column;
-        margin-bottom: 1rem;
-    }
-    
-    .checkbox-group label {
-        display: flex;
-        align-items: flex-start;
-        gap: 0.5rem;
-        margin-bottom: 0.25rem;
-    }
-    
-    .checkbox-group input[type="checkbox"] {
-        margin-top: 0.15rem;
-        flex-shrink: 0;
-    }
-    
-    .settings-section {
-        border-bottom: 1px solid var(--border-primary, #ddd);
-        padding-bottom: 1.5rem;
-        margin-bottom: 1.5rem;
-    }
-    
-    .settings-section:last-child {
-        border-bottom: none;
-        margin-bottom: 0;
-    }
-    
-    .settings-section h3 {
-        color: var(--color-primary, #8b5cf6);
-        margin-bottom: 1rem;
-        font-size: 1.1em;
-        font-weight: 600;
-    }
-    </style>
+    <div id="enhanced-settings-container"></div>
 
+    <script type="module">
+        // Load the enhanced settings module when ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', async () => {
+                try {
+                    const { initializeSettings } = await import('./js/settings/integration.js');
+                    initializeSettings();
+                    window.settingsEnhanced = true;
+                    console.log('✅ Enhanced settings loaded');
+                } catch (error) {
+                    console.error('❌ Failed to load enhanced settings:', error);
+                }
+            });
+        }
+    </script>
 </body>
 </html>

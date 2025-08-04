@@ -22,6 +22,7 @@ from api.review_routes import register_review_routes
 from api.pipeline_routes import register_pipeline_routes
 from api.websockets import register_websocket_handlers
 from datetime import datetime
+from api.config_routes import config_bp
 
 def load_saved_config(runtime_config, output_folder):
     """Load saved configuration if it exists."""

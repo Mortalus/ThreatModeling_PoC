@@ -98,6 +98,7 @@
         llm_model: 'llama-3.3-70b-instruct',
         scw_secret_key: '',
         local_llm_endpoint: 'http://localhost:11434/api/generate',
+        azure_endpoint: '',
         timeout: 5000,
         temperature: 0.2,
         max_tokens: 4096,
@@ -117,7 +118,43 @@
         mitre_enabled: true
     };
 
+    // Enhanced Settings System Integration
+    let settingsEnhanced = false;
+    let enhancedSettingsModule = null;
+
     // ===== UTILITY FUNCTIONS =====
+
+    /**
+     * Load the enhanced settings module
+     */
+    async function loadEnhancedSettingsModule() {
+        try {
+            // Try to load the enhanced settings modules
+            const modules = await Promise.all([
+                import('./js/settings/constants.js'),
+                import('./js/settings/storage.js'),
+                import('./js/settings/validation.js'),
+                import('./js/settings/integration.js')
+            ]);
+            
+            enhancedSettingsModule = {
+                constants: modules[0],
+                storage: modules[1],
+                validation: modules[2],
+                integration: modules[3]
+            };
+            
+            // Initialize the enhanced settings
+            enhancedSettingsModule.integration.initializeSettings();
+            settingsEnhanced = true;
+            
+            console.log('✅ Enhanced settings system loaded successfully');
+            return true;
+        } catch (error) {
+            console.warn('⚠️ Enhanced settings not available, using legacy system:', error);
+            return false;
+        }
+    }
 
     /**
      * Log loading progress with timestamp
@@ -360,6 +397,7 @@
         setFieldValue('llm-model', currentConfig.llm_model);
         setFieldValue('scw-api-key', currentConfig.scw_secret_key);
         setFieldValue('local-endpoint', currentConfig.local_llm_endpoint);
+        setFieldValue('azure-endpoint', currentConfig.azure_endpoint);
         
         // Processing Parameters
         setFieldValue('timeout', currentConfig.timeout);
@@ -383,7 +421,7 @@
         setFieldValue('enable-llm-enrichment', currentConfig.enable_llm_enrichment);
         setFieldValue('mitre-enabled', currentConfig.mitre_enabled);
 
-        // **FIX:** Update conditional UI elements after loading config from storage
+        // Update conditional UI elements after loading config from storage
         updateProviderFields();
         updateAsyncFields();
         updateDebugFields();
@@ -414,17 +452,85 @@
         return null;
     }
 
+    /**
+     * Enhanced provider fields update with Azure support
+     */
     function updateProviderFields() {
-        const provider = getFieldValue('llm-provider');
-        const apiKeyGroup = document.getElementById('api-key-group');
+        const provider = document.getElementById('llm-provider')?.value;
         const localEndpointGroup = document.getElementById('local-endpoint-group');
+        const azureEndpointGroup = document.getElementById('azure-endpoint-group');
         
-        if (provider === 'scaleway') {
-            if (apiKeyGroup) apiKeyGroup.style.display = 'block';
-            if (localEndpointGroup) localEndpointGroup.style.display = 'none';
-        } else if (provider === 'ollama') {
-            if (apiKeyGroup) apiKeyGroup.style.display = 'none';
-            if (localEndpointGroup) localEndpointGroup.style.display = 'block';
+        if (!provider) return;
+        
+        // Hide all provider-specific fields first
+        if (localEndpointGroup) localEndpointGroup.style.display = 'none';
+        if (azureEndpointGroup) azureEndpointGroup.style.display = 'none';
+        
+        // Show relevant fields based on provider
+        switch(provider) {
+            case 'ollama':
+                if (localEndpointGroup) localEndpointGroup.style.display = 'block';
+                break;
+            case 'azure':
+                if (azureEndpointGroup) azureEndpointGroup.style.display = 'block';
+                break;
+            case 'scaleway':
+                // No additional fields needed as API key is handled server-side or via env
+                break;
+        }
+        
+        // Update model dropdown
+        updateModelOptions(provider);
+    }
+
+    /**
+     * Update model options based on provider
+     */
+    function updateModelOptions(provider) {
+        const modelSelect = document.getElementById('llm-model');
+        if (!modelSelect) return;
+        
+        const models = {
+            scaleway: [
+                'llama-3.3-70b-instruct',
+                'llama-3.1-8b-instruct',
+                'llama-3.1-70b-instruct',
+                'mistral-nemo-instruct-2407'
+            ],
+            azure: [
+                'gpt-4',
+                'gpt-4-turbo',
+                'gpt-35-turbo',
+                'gpt-4o'
+            ],
+            ollama: [
+                'llama3.3:latest',
+                'llama3.2:latest',
+                'llama3.1:latest',
+                'mistral:latest',
+                'mixtral:latest',
+                'codellama:latest',
+                'phi3:latest'
+            ]
+        };
+        
+        // Clear current options
+        modelSelect.innerHTML = '';
+        
+        // Add new options
+        const providerModels = models[provider] || [];
+        providerModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model;
+            option.textContent = model;
+            modelSelect.appendChild(option);
+        });
+        
+        // Set current or default model
+        if (currentConfig.llm_provider === provider && providerModels.includes(currentConfig.llm_model)) {
+            modelSelect.value = currentConfig.llm_model;
+        } else if (providerModels.length > 0) {
+            modelSelect.value = providerModels[0];
         }
     }
 
@@ -444,7 +550,7 @@
         const forceRuleBased = getFieldValue('force-rule-based');
         
         // If force rule-based is enabled, some other options become irrelevant
-        const affectedFields = ['enable-async-processing', 'max-concurrent-calls', 'detailed-llm-logging'];
+        const affectedFields = ['enable-async-processing', 'max-concurrent-calls', 'detailed-llm-logging', 'enable-llm-enrichment'];
         
         affectedFields.forEach(fieldId => {
             const field = document.getElementById(fieldId);
@@ -495,7 +601,6 @@
         
         // Validate logical combinations
         if (config.force_rule_based && config.enable_async_processing) {
-            // This is not necessarily an error, but we should warn
             console.warn('⚠️ Async processing is less beneficial with force rule-based mode');
         }
         
@@ -506,24 +611,29 @@
         return errors;
     }
 
-    function saveSettings() {
+    async function saveSettings() {
+        if (settingsEnhanced && window.saveEnhancedSettings) {
+            // Enhanced settings handle saving internally
+            return window.saveEnhancedSettings();
+        }
+        
         try {
-            // Collect all configuration values
             const newConfig = {
                 // LLM Configuration
                 llm_provider: getFieldValue('llm-provider'),
                 llm_model: getFieldValue('llm-model'),
                 scw_secret_key: getFieldValue('scw-api-key'),
                 local_llm_endpoint: getFieldValue('local-endpoint'),
+                azure_endpoint: getFieldValue('azure-endpoint'),
                 
                 // Processing Parameters
-                timeout: getFieldValue('timeout'),
-                temperature: getFieldValue('temperature'),
-                max_tokens: getFieldValue('max-tokens'),
+                timeout: parseInt(getFieldValue('timeout')),
+                temperature: parseFloat(getFieldValue('temperature')),
+                max_tokens: parseInt(getFieldValue('max-tokens')),
                 
                 // Async/Performance Options
                 enable_async_processing: getFieldValue('enable-async-processing'),
-                max_concurrent_calls: getFieldValue('max-concurrent-calls'),
+                max_concurrent_calls: parseInt(getFieldValue('max-concurrent-calls')),
                 detailed_llm_logging: getFieldValue('detailed-llm-logging'),
                 
                 // Debug Options
@@ -555,9 +665,7 @@
             // Send to backend
             fetch('/api/config', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(currentConfig)
             })
             .then(response => response.json())
@@ -566,6 +674,13 @@
                     console.log('✅ Configuration saved successfully');
                     showNotification('Settings saved successfully!', 'success');
                     closeSettingsModal();
+                    
+                    // Also save to config file for persistence
+                    return fetch('/api/config/save', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(currentConfig)
+                    });
                 } else {
                     console.error('❌ Failed to save configuration:', data.error);
                     showNotification('Failed to save settings: ' + data.error, 'error');
@@ -583,18 +698,16 @@
     }
 
     function showNotification(message, type = 'info') {
-        // Create notification element
+        const container = document.getElementById('notification-container') || document.body;
         const notification = document.createElement('div');
         notification.className = `notification notification-${type}`;
         notification.innerHTML = `
             <span>${message}</span>
-            <button onclick="this.parentElement.remove()" style="background: none; border: none; color: inherit; font-size: 1.2em; cursor: pointer; margin-left: 10px;">&times;</button>
+            <button onclick="this.parentElement.remove()" style="background:none;border:none;color:inherit;font-size:1.2em;cursor:pointer;margin-left:10px;">&times;</button>
         `;
         
-        // Add to page
-        document.body.appendChild(notification);
+        container.appendChild(notification);
         
-        // Auto-remove after 5 seconds
         setTimeout(() => {
             if (notification.parentElement) {
                 notification.remove();
@@ -603,19 +716,31 @@
     }
 
     function openSettingsModal() {
-        const modal = document.getElementById('settingsModal');
-        if (modal) {
-            modal.style.display = 'flex';
-            updateProviderFields();
-            updateAsyncFields();
-            updateDebugFields();
+        if (settingsEnhanced && window.openEnhancedSettingsModal) {
+            // Use enhanced settings if available
+            window.openEnhancedSettingsModal();
+        } else {
+            // Fall back to existing modal
+            const modal = document.getElementById('settingsModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                updateProviderFields();
+                updateAsyncFields();
+                updateDebugFields();
+            }
         }
     }
 
     function closeSettingsModal() {
-        const modal = document.getElementById('settingsModal');
-        if (modal) {
-            modal.style.display = 'none';
+        if (settingsEnhanced && window.closeEnhancedSettingsModal) {
+            // Use enhanced settings if available
+            window.closeEnhancedSettingsModal();
+        } else {
+            // Fall back to existing modal
+            const modal = document.getElementById('settingsModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
         }
     }
 
@@ -643,6 +768,15 @@
 
         // Initialize configuration management
         loadSettings();
+
+        // Try to load enhanced settings module
+        loadEnhancedSettingsModule().then(success => {
+            if (success) {
+                console.log('✅ Using enhanced settings system');
+            } else {
+                console.log('ℹ️ Using legacy settings system');
+            }
+        });
 
         // Set up event listeners for configuration
         document.addEventListener('change', function(event) {
@@ -789,35 +923,14 @@
         animation: slideIn 0.3s ease-out;
     }
 
-    .notification-success {
-        background: #10b981;
-        color: white;
-    }
-
-    .notification-error {
-        background: #ef4444;
-        color: white;
-    }
-
-    .notification-info {
-        background: #3b82f6;
-        color: white;
-    }
-
-    .notification-warning {
-        background: #f59e0b;
-        color: white;
-    }
+    .notification-success { background: #10b981; color: white; }
+    .notification-error { background: #ef4444; color: white; }
+    .notification-info { background: #3b82f6; color: white; }
+    .notification-warning { background: #f59e0b; color: white; }
 
     @keyframes slideIn {
-        from {
-            transform: translateX(100%);
-            opacity: 0;
-        }
-        to {
-            transform: translateX(0);
-            opacity: 1;
-        }
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
     }
     `;
 
