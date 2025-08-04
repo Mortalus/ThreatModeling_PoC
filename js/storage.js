@@ -1,4 +1,5 @@
 // js/settings/storage.ts
+import { API_BASE } from './core-utilities.js';
 import { DEFAULT_SETTINGS } from './constants.js';
 export class SettingsStorage {
     /**
@@ -182,4 +183,4 @@ export class SettingsStorage {
     }
 }
 SettingsStorage.STORAGE_KEY = 'threat_modeling_settings';
-SettingsStorage.CONFIG_ENDPOINT = '/api/config';
+SettingsStorage.CONFIG_ENDPOINT = `${API_BASE}/config`;

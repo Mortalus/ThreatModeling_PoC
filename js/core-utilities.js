@@ -4,7 +4,6 @@
  * Core utility functions, constants, and helper methods used throughout the application.
  * This file should be loaded first before any other JavaScript modules.
  */
-
 (function(window) {
     'use strict';
 
@@ -84,11 +83,11 @@
     const deepClone = (obj) => {
         if (obj === null || typeof obj !== 'object') return obj;
         if (obj instanceof Date) return new Date(obj.getTime());
-        if (obj instanceof Array) return obj.map(item => deepClone(item));
+        if (Array.isArray(obj)) return obj.map(item => deepClone(item));
         if (typeof obj === 'object') {
             const clonedObj = {};
             for (const key in obj) {
-                if (obj.hasOwnProperty(key)) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
                     clonedObj[key] = deepClone(obj[key]);
                 }
             }
@@ -279,6 +278,8 @@
             message = error;
         }
         
+        // Assuming a global notification function might exist.
+        // This might need to be refactored depending on your notification system.
         if (window.showNotification) {
             window.showNotification(`Error: ${message}`, 'error');
         }
@@ -317,6 +318,9 @@
 
     // ===== INITIALIZATION =====
 
+    /**
+     * Sets up global handlers. Should be called once when the application starts.
+     */
     const initializeCoreUtilities = () => {
         window.addEventListener('error', (event) => {
             handleError(event.error, 'Global Error Handler');
@@ -330,44 +334,13 @@
         console.log('Browser Support:', browserSupport);
     };
 
-    // ===== EXPORTS =====
-
-    const CoreUtilities = {
-        API_BASE,
-        WS_BASE,
-        APP_CONFIG,
-        PIPELINE_STEPS,
-        STATUS_CONFIG,
-        debounce,
-        throttle,
-        deepClone,
-        generateId,
-        formatFileSize,
-        formatDuration,
-        capitalize,
-        truncateText,
-        isEmpty,
-        safeJsonParse,
-        safeJsonStringify,
-        storage,
-        sessionStorage,
-        validateFile,
-        handleError,
-        browserSupport,
-        getBrowserInfo,
-        initializeCoreUtilities
-    };
-
-    // Make available globally
-    window.CoreUtilities = CoreUtilities;
-
-    // Auto-initialize if DOM is ready
+    // Auto-initialize the global handlers.
+    // This is a side-effect that runs when the module is first imported.
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initializeCoreUtilities);
     } else {
         initializeCoreUtilities();
     }
 
-    console.log('Core Utilities loaded successfully');
-
+    console.log('Core Utilities module loaded');
 })(window);

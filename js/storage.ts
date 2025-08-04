@@ -1,11 +1,15 @@
 // js/settings/storage.ts
-
 import { ThreatModelingConfiguration } from './types.js';
 import { DEFAULT_SETTINGS } from './constants.js';
 
+// Since CoreUtilities is a global, we declare it to satisfy TypeScript
+declare const CoreUtilities: {
+    API_BASE: string;
+};
+
 export class SettingsStorage {
   private static readonly STORAGE_KEY = 'threat_modeling_settings';
-  private static readonly CONFIG_ENDPOINT = '/api/config';
+  private static readonly CONFIG_ENDPOINT = `${CoreUtilities.API_BASE}/config`;
 
   /**
    * Load settings from localStorage and merge with defaults
