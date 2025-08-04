@@ -4,6 +4,16 @@
 
 This repository contains an AI-powered threat modeling pipeline that analyzes security requirements documents and generates comprehensive threat assessments. The system uses a 5-step pipeline process to extract data flow diagrams (DFDs), identify threats, improve threat quality, and analyze attack paths. It features a React-based web interface with real-time updates via WebSocket, support for multiple LLM providers (Scaleway and Ollama), and includes a review system for human validation of AI-generated results.
 
+## Recent Updates
+
+### Enhanced Settings Modal System
+The application now features a completely redesigned settings management system with:
+- **Modular TypeScript Architecture**: Settings are now managed through separate TypeScript modules for types, constants, storage, validation, and integration
+- **React-based Modal UI**: A new tabbed interface replacing the legacy modal with sections for LLM, Processing, Debug, and Pipeline Steps configuration
+- **Real-time Validation**: Settings are validated before saving with detailed error messages
+- **Backend Synchronization**: Settings are automatically synced with the backend and persisted across sessions
+- **Step-specific Configuration**: Each pipeline step can now be configured individually with specific parameters
+
 ## File Descriptions
 
 ### Root Configuration Files
@@ -44,7 +54,7 @@ This repository contains an AI-powered threat modeling pipeline that analyzes se
 
 **`services/llm_threat_service.py`** - Specialized LLM service for threat generation with progress tracking and call counting.
 
-**`services/threat_generation_service.py`** - Main service for generating threats from DFD components (implementation not shown in search results).
+**`services/threat_generation_service.py`** - Main service for generating threats from DFD components (implementation not shown).
 
 **`services/threat_quality_improvement_service.py`** - Service for refining threats with quality scoring and enrichment (implementation not shown).
 
@@ -82,7 +92,7 @@ This repository contains an AI-powered threat modeling pipeline that analyzes se
 
 ### Frontend JavaScript (`js/`)
 
-**`js/main.js`** - Master JavaScript loader that orchestrates module loading, handles configuration management, and initializes the React application.
+**`js/main.js`** - Master JavaScript loader that orchestrates module loading, handles configuration management, initializes the React application, and now integrates with the enhanced settings system.
 
 **`js/core-utilities.js`** - Essential utilities including API configuration, debounce/throttle functions, storage helpers, and browser compatibility checks.
 
@@ -95,6 +105,20 @@ This repository contains an AI-powered threat modeling pipeline that analyzes se
 **`js/review-system.js`** - Review panel components for threat validation with decision cards, attribute selection, and comment submission.
 
 **`js/main-app.js`** - Main React application component that manages state, WebSocket connections, and orchestrates the entire UI.
+
+### Enhanced Settings System (`js/settings/`)
+
+**`js/settings/types.ts`** - TypeScript type definitions for the entire settings system including LLM configuration, processing options, and validation interfaces.
+
+**`js/settings/constants.ts`** - Constants and default values for all configuration options including LLM providers, models, and pipeline steps.
+
+**`js/settings/storage.ts`** - Handles persistence of settings to localStorage and backend synchronization with deep merge capabilities.
+
+**`js/settings/validation.ts`** - Comprehensive validation logic for all settings with detailed error reporting and type checking.
+
+**`js/settings/integration.js`** - Bridges the new settings system with the legacy codebase, providing backward compatibility and initialization.
+
+**`js/settings/SettingsModal.tsx`** - React component for the enhanced settings modal with tabbed interface, real-time validation, and auto-save functionality.
 
 ### Frontend CSS (`css/`)
 
@@ -112,6 +136,8 @@ This repository contains an AI-powered threat modeling pipeline that analyzes se
 
 **`css/review-system.css`** - Review panel and decision interface styles with threat-specific formatting.
 
+**`css/settings-styles.css`** - Styles for the enhanced settings modal including tabbed layout, form controls, and validation states.
+
 **`css/utilities.css`** - Helper classes and utility styles (implementation not shown).
 
 ## Core Functionality
@@ -126,11 +152,32 @@ The threat modeling pipeline operates through five sequential steps:
 
 The system supports both cloud-based LLMs (Scaleway) and local models (Ollama), with async processing for improved performance. A comprehensive review system allows security experts to validate and refine AI-generated results before finalizing the threat model.
 
-Key features include:
-- Real-time progress tracking with WebSocket updates
-- Session-based file handling for multi-user support  
-- Configurable processing parameters (temperature, tokens, timeouts)
-- Debug mode with rule-based fallbacks
-- Export functionality for all generated artifacts
-- Responsive web interface with keyboard shortcuts
-- Comprehensive error handling and logging
+## Configuration Management
+
+The enhanced settings system provides granular control over:
+
+### LLM Configuration
+- Provider selection (Scaleway, Ollama, Azure, OpenAI)
+- Model selection with provider-specific options
+- Temperature and token limits
+- Custom endpoints for self-hosted models
+
+### Processing Options
+- Timeout settings for long-running operations
+- Async processing toggle with concurrent call limits
+- Detailed logging controls
+- Session management
+
+### Debug Features
+- Debug mode with verbose output
+- Rule-based fallback options
+- Error reporting verbosity
+- Performance profiling
+
+### Pipeline Step Configuration
+- Per-step enable/disable controls
+- Quality thresholds and confidence levels
+- Component limits and filtering options
+- Output format preferences
+
+Settings are validated in real-time, persisted across sessions, and synchronized with the backend for consistency across all pipeline components.

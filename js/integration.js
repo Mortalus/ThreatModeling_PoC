@@ -84,15 +84,13 @@ function openEnhancedSettingsModal() {
     container.id = 'enhanced-settings-container';
     document.body.appendChild(container);
     
-    // Use React from window
     const React = window.React;
     const ReactDOM = window.ReactDOM;
     
-    // Import and render the settings modal
+    // Corrected path to the SettingsModal component
     import('./SettingsModal.js').then(({ SettingsModal }) => {
       const App = () => {
         const [isOpen, setIsOpen] = React.useState(true);
-        
         window.setSettingsModalOpen = setIsOpen;
         
         return React.createElement(SettingsModal, {
@@ -105,7 +103,6 @@ function openEnhancedSettingsModal() {
       window.settingsModalMounted = true;
     });
   } else {
-    // Just open the existing modal
     window.setSettingsModalOpen(true);
   }
 }

@@ -22,7 +22,7 @@
     // ===== LOADING CONFIGURATION =====
     
     const SCRIPT_CONFIG = {
-        baseUrl: 'js/', // Empty string since all files are in the same js/ directory
+        baseUrl: 'js/', // Base directory for legacy scripts
         version: '1.0.0',
         loadTimeout: 30000, // 30 seconds
         retryAttempts: 3,
@@ -129,12 +129,12 @@
      */
     async function loadEnhancedSettingsModule() {
         try {
-            // Try to load the enhanced settings modules
+            // Try to load the enhanced settings modules using absolute paths
             const modules = await Promise.all([
-                import('./js/settings/constants.js'),
-                import('./js/settings/storage.js'),
-                import('./js/settings/validation.js'),
-                import('./js/settings/integration.js')
+                import('/js/constants.js'),
+                import('/js/storage.js'),
+                import('/js/validation.js'),
+                import('/js/integration.js')
             ]);
             
             enhancedSettingsModule = {
@@ -904,6 +904,14 @@
         startApplication, // Expose the main start function
         log
     };
+    
+    
+    // Add event listeners for settings modal buttons
+    document.getElementById('open-settings-button').addEventListener('click', openSettingsModal);
+    document.getElementById('close-settings-button').addEventListener('click', closeSettingsModal);
+    document.getElementById('save-settings-button').addEventListener('click', saveSettings);
+    document.getElementById('cancel-settings-button').addEventListener('click', closeSettingsModal);
+
 
     // ===== START APPLICATION =====
     

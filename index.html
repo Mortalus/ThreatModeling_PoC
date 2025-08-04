@@ -16,28 +16,28 @@
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
     <link rel="stylesheet" href="css/main.css">
-    <link rel="stylesheet" href="css/settings.css">
+    <link rel="stylesheet" href="css/settings-styles.css">
     
     <script src="js/main.js" defer></script>
 
 </head>
 <body>
     <div id="root">
-        <button onclick="openSettingsModal()" style="margin: 20px; padding: 10px;">Open Settings</button>
+        <button id="open-settings-button" style="margin: 20px; padding: 10px;">Open Settings</button>
     </div>
 
     <div id="settingsModal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
                 <h2>⚙️ Settings</h2>
-                <span class="close" onclick="closeSettingsModal()">&times;</span>
+                <span class="close" id="close-settings-button">&times;</span>
             </div>
             <div class="modal-body">
                 <div class="settings-section">
                     <h3>LLM Configuration</h3>
                     <div class="form-group">
                         <label for="llm-provider">LLM Provider:</label>
-                        <select id="llm-provider" class="form-select" onchange="updateProviderFields()">
+                        <select id="llm-provider" class="form-select" onchange="ThreatModelingConfig.updateProviderFields()">
                             <option value="scaleway">Scaleway</option>
                             <option value="azure">Azure OpenAI</option>
                             <option value="ollama">Ollama (Local)</option>
@@ -87,7 +87,7 @@
                     <h3>Performance Options</h3>
                     <div class="form-group">
                         <label>
-                            <input type="checkbox" id="enable-async-processing" checked onchange="updateAsyncFields()">
+                            <input type="checkbox" id="enable-async-processing" checked onchange="ThreatModelingConfig.updateAsyncFields()">
                             Enable Async Processing
                         </label>
                         <small class="form-help">Process multiple LLM calls concurrently for faster execution</small>
@@ -110,7 +110,7 @@
                     <h3>Debug Options</h3>
                     <div class="form-group">
                         <label>
-                            <input type="checkbox" id="debug-mode" onchange="updateDebugFields()">
+                            <input type="checkbox" id="debug-mode" onchange="ThreatModelingConfig.updateDebugFields()">
                             Enable Debug Mode
                         </label>
                         <small class="form-help">Show detailed debugging information in console</small>
@@ -173,8 +173,8 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
-                <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+                <button class="btn btn-primary" id="save-settings-button">💾 Save Settings</button>
+                <button class="btn btn-secondary" id="cancel-settings-button">Cancel</button>
             </div>
         </div>
     </div>
@@ -186,7 +186,7 @@
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', async () => {
                 try {
-                    const { initializeSettings } = await import('./js/settings/integration.js');
+                    const { initializeSettings } = await import('/js/integration.js');
                     initializeSettings();
                     window.settingsEnhanced = true;
                     console.log('✅ Enhanced settings loaded');
@@ -194,6 +194,15 @@
                     console.error('❌ Failed to load enhanced settings:', error);
                 }
             });
+        } else {
+             try {
+                    const { initializeSettings } = await import('/js/integration.js');
+                    initializeSettings();
+                    window.settingsEnhanced = true;
+                    console.log('✅ Enhanced settings loaded');
+                } catch (error) {
+                    console.error('❌ Failed to load enhanced settings:', error);
+                }
         }
     </script>
 </body>
