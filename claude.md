@@ -36,6 +36,14 @@ The application now features a completely redesigned settings management system 
 
 **`api/routes.py`** - Core API endpoints for health checks, configuration management, file uploads, and system status monitoring.
 
+**`api/review_routes.py`** - Endpoints for the review system allowing human validation of AI-generated threats and DFD components.
+
+**`api/pipeline_routes.py`** - Pipeline execution endpoints for running individual steps, checking progress, and managing pipeline state.
+
+**`api/websockets.py`** - WebSocket handlers for real-time progress updates and review notifications.
+
+**`api/config_routes.py`** - Configuration management endpoints for saving, loading, and resetting system settings.
+
 ### Configuration (`config/`)
 
 **`config/settings.py`** - Central configuration management with environment variable loading, async processing settings, and debug mode options.
@@ -151,33 +159,3 @@ The threat modeling pipeline operates through five sequential steps:
 5. **Attack Path Analysis** - The system analyzes potential attack chains and exploit paths
 
 The system supports both cloud-based LLMs (Scaleway) and local models (Ollama), with async processing for improved performance. A comprehensive review system allows security experts to validate and refine AI-generated results before finalizing the threat model.
-
-## Configuration Management
-
-The enhanced settings system provides granular control over:
-
-### LLM Configuration
-- Provider selection (Scaleway, Ollama, Azure, OpenAI)
-- Model selection with provider-specific options
-- Temperature and token limits
-- Custom endpoints for self-hosted models
-
-### Processing Options
-- Timeout settings for long-running operations
-- Async processing toggle with concurrent call limits
-- Detailed logging controls
-- Session management
-
-### Debug Features
-- Debug mode with verbose output
-- Rule-based fallback options
-- Error reporting verbosity
-- Performance profiling
-
-### Pipeline Step Configuration
-- Per-step enable/disable controls
-- Quality thresholds and confidence levels
-- Component limits and filtering options
-- Output format preferences
-
-Settings are validated in real-time, persisted across sessions, and synchronized with the backend for consistency across all pipeline components.
