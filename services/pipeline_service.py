@@ -1,5 +1,6 @@
 """
-Fixed pipeline_service.py - Now properly passes session information to DFD extraction
+Fixed pipeline_service.py - Ensures proper handling of step transitions
+and progress tracking for step 3 after DFD extraction.
 """
 
 import json
@@ -7,6 +8,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from typing import Dict, Any, Optional
 from services.review_service import ReviewService
 from services.validation_service import ValidationService
 from utils.file_utils import save_step_data
@@ -16,6 +18,7 @@ from utils.logging_utils import logger
 class PipelineService:
     @staticmethod
     def update_progress(session_id: str, step: int, data: dict, pipeline_state: PipelineState, socketio) -> None:
+        """Update progress for a specific step and session."""
         with pipeline_state.lock:
             if session_id not in pipeline_state.state['progress']:
                 pipeline_state.state['progress'][session_id] = {}
@@ -31,42 +34,95 @@ class PipelineService:
 
     @staticmethod
     def get_step_progress(step: int, output_folder: str) -> dict:
+        """Get progress for a specific step from file or return default."""
         progress_file = os.path.join(output_folder, f'step_{step}_progress.json')
         if os.path.exists(progress_file):
             try:
                 with open(progress_file, 'r') as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not read progress file for step {step}: {e}")
+        
+        # Return proper default status
         return {
-            'status': 'unknown',
+            'status': 'pending',  # Changed from 'unknown' to 'pending'
             'progress': 0,
-            'message': 'No progress information available'
+            'message': 'Ready to start'
         }
+
+    @staticmethod
+    def verify_step_output(step: int, output_folder: str) -> bool:
+        """Verify that step output exists and is valid."""
+        output_files = {
+            2: 'dfd_components.json',
+            3: 'identified_threats.json',
+            4: 'refined_threats.json',
+            5: 'attack_paths.json'
+        }
+        
+        if step not in output_files:
+            return False
+            
+        output_file = os.path.join(output_folder, output_files[step])
+        if not os.path.exists(output_file):
+            return False
+            
+        try:
+            with open(output_file, 'r') as f:
+                data = json.load(f)
+                # Basic validation that the file has content
+                return bool(data)
+        except Exception as e:
+            logger.error(f"Invalid output file for step {step}: {e}")
+            return False
 
     @staticmethod
     def execute_step(step: int, input_data: dict, runtime_config: dict, pipeline_state: PipelineState, 
                     socketio, output_folder: str, input_folder: str) -> dict:
+        """Execute a specific pipeline step with improved error handling."""
+        
         if not isinstance(step, int) or step < 1 or step > 5:
             raise ValueError('Invalid step number. Must be 1-5.')
         
-        if step > 1:
+        # Check if previous step is completed (except for step 1 and 2)
+        if step > 2:
             with pipeline_state.lock:
                 step_outputs = pipeline_state.state.get('step_outputs', {})
                 prev_step_output = step_outputs.get(step - 1)
+            
             if not prev_step_output:
+                # Try to load from file if not in memory
                 if step == 3:
                     dfd_file = os.path.join(output_folder, 'dfd_components.json')
                     if os.path.exists(dfd_file):
-                        with open(dfd_file, 'r') as f:
-                            pipeline_state.state['step_outputs'][2] = json.load(f)
+                        try:
+                            with open(dfd_file, 'r') as f:
+                                dfd_data = json.load(f)
+                                # Store in pipeline state for next steps
+                                with pipeline_state.lock:
+                                    pipeline_state.state['step_outputs'][2] = dfd_data
+                                logger.info(f"Loaded DFD data from file for step 3")
+                        except Exception as e:
+                            logger.error(f"Failed to load DFD data: {e}")
+                            raise ValueError(f'Step 2 output (DFD) is missing or invalid')
                     else:
-                        raise ValueError(f'Step {step - 1} must be completed first')
+                        raise ValueError(f'Step 2 must be completed first - DFD file not found')
                 else:
-                    raise ValueError(f'Step {step - 1} must be completed first')
+                    # For steps 4 and 5, check previous step
+                    prev_file = {
+                        4: 'identified_threats.json',
+                        5: 'refined_threats.json'
+                    }.get(step)
+                    
+                    if prev_file:
+                        prev_path = os.path.join(output_folder, prev_file)
+                        if not os.path.exists(prev_path):
+                            raise ValueError(f'Step {step - 1} must be completed first')
         
+        # Log step start
         pipeline_state.add_log(f"Starting step {step}", 'info')
         session_id = pipeline_state.state.get('current_session')
+        
         if session_id:
             PipelineService.update_progress(session_id, step, {
                 'status': 'running',
@@ -74,6 +130,7 @@ class PipelineService:
                 'message': f'Starting step {step}...'
             }, pipeline_state, socketio)
         
+        # Prepare environment
         env = os.environ.copy()
         
         # Base environment updates
@@ -93,77 +150,59 @@ class PipelineService:
             'MAX_TOKENS': str(runtime_config.get('max_tokens', 4096)),
         }
         
-        # **CRITICAL FIX**: Add session ID to environment for DFD extraction
+        # Add session ID to environment for tracking
         if session_id:
             env_updates['SESSION_ID'] = session_id
-            logger.info(f"Setting SESSION_ID environment variable: {session_id}")
+        
+        # Handle API keys securely
+        for key in ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY', 
+                   'GOOGLE_API_KEY', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT',
+                   'BEDROCK_ACCESS_KEY', 'BEDROCK_SECRET_KEY', 'BEDROCK_REGION']:
+            value = runtime_config.get(key.lower()) or os.getenv(key)
+            if value:
+                env_updates[key] = value
         
         env.update(env_updates)
         
-        if runtime_config['scw_secret_key']:
-            env['SCW_SECRET_KEY'] = runtime_config['scw_secret_key']
-            env['SCW_API_KEY'] = runtime_config['scw_secret_key']
-        
-        # Log LLM configuration
-        logger.info(f"LLM Configuration for step {step}:")
-        logger.info(f"  Provider: {runtime_config['llm_provider']}")
-        logger.info(f"  Model: {runtime_config['llm_model']}")
-        logger.info(f"  Endpoint: {runtime_config.get('local_llm_endpoint', 'N/A')}")
-        logger.info(f"  Session ID: {session_id}")
-        
-        output_file = None
+        # Determine script and output file
         script_name = None
+        output_file = None
         
-        if step == 1:
-            # Step 1 is upload, handled separately
-            logger.warning("Step 1 (upload) called through run-step API")
-            return pipeline_state.state['step_outputs'].get(1, {})
-            
-        elif step == 2:
+        if step == 2:
             script_name = 'info_to_dfds.py'
             
-            # Get current session and file info
-            current_session = pipeline_state.state.get('current_session')
-            upload_data = pipeline_state.state.get('step_outputs', {}).get(1, {})
+            # Ensure input files are available for DFD extraction
+            with pipeline_state.lock:
+                current_session = pipeline_state.state.get('current_session')
+                uploaded_file = pipeline_state.state.get('uploaded_file')
             
-            if current_session:
-                logger.info(f"Current session: {current_session}")
-                
-                # **ADDITIONAL FIX**: Verify uploaded file exists and create symlink if needed
-                uploaded_file = upload_data.get('text_file_path') if upload_data else None
-                if uploaded_file and os.path.exists(uploaded_file):
-                    logger.info(f"Verified uploaded file exists: {uploaded_file}")
+            if current_session and uploaded_file:
+                # Create session-specific file for better tracking
+                uploaded_path = os.path.join(input_folder, uploaded_file)
+                if uploaded_path.endswith('_extracted.txt'):
+                    session_file = os.path.join(output_folder, f"session_{current_session}.txt")
                     
-                    # Ensure the file is also accessible with session ID naming
-                    session_file = os.path.join(input_folder, f"{current_session}_extracted.txt")
-                    if not os.path.exists(session_file):
+                    if os.path.exists(uploaded_path) and not os.path.exists(session_file):
                         try:
-                            # Create a copy with session ID naming for compatibility
                             import shutil
-                            shutil.copy2(uploaded_file, session_file)
+                            shutil.copy2(uploaded_path, session_file)
                             logger.info(f"Created session file: {session_file}")
                         except Exception as e:
                             logger.warning(f"Could not create session file: {e}")
-                else:
-                    logger.warning(f"Uploaded file not found: {uploaded_file}")
-                
-                # Clean up old extracted files that don't match current session
-                for dir_path in [input_folder, output_folder, './uploads', './output', './input_documents']:
-                    if os.path.exists(dir_path):
-                        for filename in os.listdir(dir_path):
-                            if filename.endswith('_extracted.txt') and current_session not in filename:
-                                old_file = os.path.join(dir_path, filename)
-                                try:
-                                    os.remove(old_file)
-                                    logger.info(f"Removed old file: {old_file}")
-                                except Exception as e:
-                                    logger.warning(f"Could not remove old file {old_file}: {e}")
             
             output_file = os.path.join(output_folder, 'dfd_components.json')
             
         elif step == 3:
             script_name = 'dfd_to_threats.py'
             output_file = os.path.join(output_folder, 'identified_threats.json')
+            
+            # Verify DFD file exists before running
+            dfd_file = os.path.join(output_folder, 'dfd_components.json')
+            if not os.path.exists(dfd_file):
+                raise ValueError('DFD components file not found. Please complete step 2 first.')
+            
+            # Set specific environment variable for DFD path
+            env['DFD_INPUT_PATH'] = dfd_file
             
         elif step == 4:
             script_name = 'improve_threat_quality.py'
@@ -173,58 +212,36 @@ class PipelineService:
             script_name = 'attack_path_analyzer.py'
             output_file = os.path.join(output_folder, 'attack_paths.json')
         
-        # Ensure cleanup of any progress tracking file for this step
+        # Clean up any existing progress file
         cleanup_progress_file(step, output_folder)
         
         if not script_name:
-            raise ValueError(f'Unknown step: {step}')
+            raise ValueError(f'No script defined for step {step}')
         
-        if not os.path.exists(script_name):
-            raise FileNotFoundError(f'Script not found: {script_name}')
-        
-        # **ENHANCED LOGGING**: Show what files are available before running script
-        logger.info(f"Files in input directory ({input_folder}):")
-        if os.path.exists(input_folder):
-            for file in os.listdir(input_folder):
-                if file.endswith('.txt'):
-                    file_path = os.path.join(input_folder, file)
-                    file_size = os.path.getsize(file_path)
-                    logger.info(f"  - {file} ({file_size} bytes)")
-        else:
-            logger.warning(f"Input directory does not exist: {input_folder}")
-        
-        logger.info(f"Files in output directory ({output_folder}):")
-        if os.path.exists(output_folder):
-            for file in os.listdir(output_folder):
-                if file.endswith('.txt'):
-                    file_path = os.path.join(output_folder, file)
-                    file_size = os.path.getsize(file_path)
-                    logger.info(f"  - {file} ({file_size} bytes)")
-        
-        # Run the script
-        logger.info(f"Executing {script_name} for step {step}")
-        
+        # Execute the script
         try:
+            logger.info(f"Executing: {sys.executable} {script_name}")
+            logger.debug(f"Environment: {env_updates}")
+            
             result = subprocess.run(
                 [sys.executable, script_name],
                 env=env,
-                cwd=os.getcwd(),
                 capture_output=True,
                 text=True,
                 timeout=runtime_config['timeout']
             )
             
-            # Log the script output
+            # Log output for debugging
             if result.stdout:
-                logger.info(f"Script output: {result.stdout}")
+                logger.info(f"Step {step} stdout: {result.stdout[:500]}")
             if result.stderr:
-                logger.warning(f"Script stderr: {result.stderr}")
+                logger.warning(f"Step {step} stderr: {result.stderr[:500]}")
             
+            # Check for successful execution
             if result.returncode != 0:
                 error_msg = f"Script {script_name} failed with return code {result.returncode}"
                 if result.stderr:
                     error_msg += f": {result.stderr}"
-                logger.error(error_msg)
                 raise RuntimeError(error_msg)
             
             # Load and validate output
@@ -238,12 +255,23 @@ class PipelineService:
                 
                 logger.info(f"Step {step} completed successfully")
                 
+                # Update progress to completed
                 if session_id:
                     PipelineService.update_progress(session_id, step, {
                         'status': 'completed',
                         'progress': 100,
                         'message': f'Step {step} completed successfully'
                     }, pipeline_state, socketio)
+                
+                # Write final progress file
+                progress_file = os.path.join(output_folder, f'step_{step}_progress.json')
+                with open(progress_file, 'w') as f:
+                    json.dump({
+                        'status': 'completed',
+                        'progress': 100,
+                        'message': f'Step {step} completed',
+                        'timestamp': datetime.now().isoformat()
+                    }, f)
                 
                 return output_data
             else:

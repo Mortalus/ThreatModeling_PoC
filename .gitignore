@@ -8,3 +8,8 @@ __pycache__/
 # User folders
 output/
 docs/
+input_documents/
+rag_docs/
+remove/
+uploads/
+claude.md
