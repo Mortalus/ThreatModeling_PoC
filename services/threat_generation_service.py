@@ -8,7 +8,8 @@ import logging
 import time
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
 from models.threat_models import ThreatModel, ComponentAnalysis
 from services.component_risk_analyzer import ComponentRiskAnalyzer
 from services.stride_threat_generator import StrideThreatGenerator
@@ -28,12 +29,31 @@ class ThreatGenerationService:
         self.dedup_service = ThreatDeduplicationService(
             similarity_threshold=config.get('similarity_threshold', 0.70)
         )
+        
+        # Progress tracking
+        self.start_time = None
+        self.total_components = 0
+        self.analyzed_components = 0
     
     def generate_threats_from_dfd(self, dfd_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate threats from DFD data using sync or async mode."""
-        if self.config.get('enable_async_processing', True):
+        self.start_time = time.time()
+        
+        if self.config.get('enable_async_processing', True) and not self.config.get('force_rule_based', False):
             logger.info("⚡ Using async processing for threat generation")
-            return asyncio.run(self._generate_threats_async(dfd_data))
+            try:
+                # Run async in event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(self._generate_threats_async(dfd_data))
+                loop.close()
+                return result
+            except Exception as e:
+                logger.error(f"Async processing failed: {e}")
+                if self.config.get('debug_mode', False):
+                    logger.info("Falling back to sync processing")
+                    return self._generate_threats_sync(dfd_data)
+                raise
         else:
             logger.info("🔄 Using sync processing for threat generation")
             return self._generate_threats_sync(dfd_data)
@@ -45,6 +65,7 @@ class ThreatGenerationService:
         
         # Extract and analyze components
         components = self.risk_analyzer.analyze_components(dfd_data)
+        self.total_components = len(components)
         
         # Filter to only analyze high-risk components
         high_risk_components = [
@@ -57,6 +78,8 @@ class ThreatGenerationService:
         if len(high_risk_components) > max_components:
             logger.info(f"Limiting analysis to top {max_components} highest risk components")
             high_risk_components = high_risk_components[:max_components]
+        
+        self.analyzed_components = len(high_risk_components)
         
         logger.info(f"Total components: {len(components)}")
         logger.info(f"High-risk components to analyze: {len(high_risk_components)}")
@@ -80,7 +103,7 @@ class ThreatGenerationService:
                 
                 # Rate limiting for better quality if using LLM
                 if self.config.get('llm_provider') and i < len(high_risk_components) - 1:
-                    time.sleep(1)
+                    time.sleep(0.5)  # Shorter delay
                     
             except Exception as e:
                 if self.config.get('debug_mode', False):
@@ -102,6 +125,7 @@ class ThreatGenerationService:
         
         # Extract and analyze components
         components = self.risk_analyzer.analyze_components(dfd_data)
+        self.total_components = len(components)
         
         # Filter to only analyze high-risk components
         high_risk_components = [
@@ -114,6 +138,8 @@ class ThreatGenerationService:
         if len(high_risk_components) > max_components:
             logger.info(f"Limiting analysis to top {max_components} highest risk components")
             high_risk_components = high_risk_components[:max_components]
+        
+        self.analyzed_components = len(high_risk_components)
         
         logger.info(f"Total components: {len(components)}")
         logger.info(f"High-risk components to analyze: {len(high_risk_components)}")
@@ -133,9 +159,10 @@ class ThreatGenerationService:
                 component_categories.append((component, cat_letter, cat_name, cat_def))
         
         logger.info(f"⚡ Processing {len(component_categories)} threat generation tasks concurrently")
+        logger.info(f"   Max concurrent calls: {self.config.get('max_concurrent_calls', 5)}")
         
         try:
-            # Use the LLM service's batch processing method
+            # Use the threat generator's batch processing method
             all_threats = await self.threat_generator.generate_threats_for_components_batch(component_categories)
             
             elapsed = time.time() - start_time
@@ -223,6 +250,9 @@ class ThreatGenerationService:
         if self.config.get('enable_async_processing', True) and generation_method.startswith("Rule-based"):
             processing_mode = "Sync (fallback)"
         
+        # Calculate average threats per component
+        avg_threats = len(threats) / len(analyzed_components) if analyzed_components else 0
+        
         return {
             "threats": threat_dicts,
             "metadata": {
@@ -233,6 +263,7 @@ class ThreatGenerationService:
                 "total_threats": len(threats),
                 "total_components": len(all_components),
                 "components_analyzed": len(analyzed_components),
+                "average_threats_per_component": round(avg_threats, 1),
                 "generation_method": generation_method,
                 "processing_mode": processing_mode,
                 "analysis_approach": "Risk-based with STRIDE filtering",
@@ -245,7 +276,9 @@ class ThreatGenerationService:
                 "risk_breakdown": risk_breakdown,
                 "dfd_structure": {
                     "project_name": dfd_data.get('project_name', 'Unknown'),
-                    "industry_context": dfd_data.get('industry_context', 'Unknown')
-                }
+                    "industry_context": dfd_data.get('industry_context', 'Unknown'),
+                    "description": dfd_data.get('description', '')
+                },
+                "execution_time": round(time.time() - self.start_time, 1) if self.start_time else 0
             }
         }
