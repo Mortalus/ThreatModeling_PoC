@@ -25,7 +25,7 @@
 
     <!-- Settings Modal -->
     <div id="settingsModal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 600px;">
+        <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
                 <h2>⚙️ Settings</h2>
                 <span class="close" onclick="closeSettingsModal()">&times;</span>
@@ -72,28 +72,88 @@
                     </div>
                 </div>
 
+                <!-- Async/Performance Configuration -->
+                <div class="settings-section">
+                    <h3>Performance & Execution</h3>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="enable-async-processing" checked>
+                            Enable Async Processing (Recommended)
+                        </label>
+                        <div class="form-help">Enables concurrent LLM calls for faster threat generation. Disable for debugging.</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="max-concurrent-calls">Max Concurrent LLM Calls:</label>
+                        <input type="number" id="max-concurrent-calls" class="form-input" value="5" min="1" max="20">
+                        <div class="form-help">Number of simultaneous LLM requests (async mode only)</div>
+                    </div>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="detailed-llm-logging" checked>
+                            Detailed LLM Logging
+                        </label>
+                        <div class="form-help">Log every LLM request/response with progress percentages</div>
+                    </div>
+                </div>
+
+                <!-- Debug Configuration -->
+                <div class="settings-section">
+                    <h3>Debug & Fallback Options</h3>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="debug-mode">
+                            🔧 Debug Mode
+                        </label>
+                        <div class="form-help">Use rule-based extraction when LLM fails. Disable for production.</div>
+                    </div>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="force-rule-based">
+                            Force Rule-Based Extraction
+                        </label>
+                        <div class="form-help">Skip LLM entirely and use only rule-based extraction</div>
+                    </div>
+                    <div class="checkbox-group">
+                        <label>
+                            <input type="checkbox" id="verbose-error-reporting" checked>
+                            Verbose Error Reporting
+                        </label>
+                        <div class="form-help">Show detailed error messages and stack traces</div>
+                    </div>
+                </div>
+
                 <!-- Feature Flags -->
                 <div class="settings-section">
                     <h3>Features</h3>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="enable-quality-check" checked>
-                        <label for="enable-quality-check">Enable DFD Quality Check</label>
+                        <label>
+                            <input type="checkbox" id="enable-quality-check" checked>
+                            Enable DFD Quality Check
+                        </label>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="enable-multi-pass" checked>
-                        <label for="enable-multi-pass">Enable Multi-Pass Processing</label>
+                        <label>
+                            <input type="checkbox" id="enable-multi-pass" checked>
+                            Enable Multi-Pass Processing
+                        </label>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="enable-mermaid" checked>
-                        <label for="enable-mermaid">Enable Mermaid Diagrams</label>
+                        <label>
+                            <input type="checkbox" id="enable-mermaid" checked>
+                            Enable Mermaid Diagrams
+                        </label>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="enable-llm-enrichment" checked>
-                        <label for="enable-llm-enrichment">Enable LLM Enrichment</label>
+                        <label>
+                            <input type="checkbox" id="enable-llm-enrichment" checked>
+                            Enable LLM Enrichment
+                        </label>
                     </div>
                     <div class="checkbox-group">
-                        <input type="checkbox" id="mitre-enabled" checked>
-                        <label for="mitre-enabled">Enable MITRE ATT&CK Mapping</label>
+                        <label>
+                            <input type="checkbox" id="mitre-enabled" checked>
+                            Enable MITRE ATT&CK Mapping
+                        </label>
                     </div>
                 </div>
 
@@ -116,6 +176,52 @@
             </div>
         </div>
     </div>
+
+    <style>
+    /* Enhanced form styling for new options */
+    .form-help {
+        font-size: 0.85em;
+        color: var(--text-secondary, #666);
+        margin-top: 0.25rem;
+        line-height: 1.4;
+    }
+    
+    .checkbox-group {
+        display: flex;
+        flex-direction: column;
+        margin-bottom: 1rem;
+    }
+    
+    .checkbox-group label {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.5rem;
+        margin-bottom: 0.25rem;
+    }
+    
+    .checkbox-group input[type="checkbox"] {
+        margin-top: 0.15rem;
+        flex-shrink: 0;
+    }
+    
+    .settings-section {
+        border-bottom: 1px solid var(--border-primary, #ddd);
+        padding-bottom: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+    
+    .settings-section:last-child {
+        border-bottom: none;
+        margin-bottom: 0;
+    }
+    
+    .settings-section h3 {
+        color: var(--color-primary, #8b5cf6);
+        margin-bottom: 1rem;
+        font-size: 1.1em;
+        font-weight: 600;
+    }
+    </style>
 
 </body>
 </html>

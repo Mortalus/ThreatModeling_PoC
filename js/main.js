@@ -2,20 +2,18 @@
 
 /**
  * THREAT MODELING DASHBOARD - JAVASCRIPT ARCHITECTURE
- * 
- * This file orchestrates the loading and initialization of all JavaScript modules
+ * * This file orchestrates the loading and initialization of all JavaScript modules
  * for the threat modeling application. Files are loaded in dependency order to
  * ensure proper initialization and component availability.
- * 
- * Architecture:
+ * * Architecture:
  * 1. Core Utilities - Essential functions, constants, and utilities
  * 2. Infrastructure - Browser detection, performance monitoring, error handling
  * 3. UI Components - Reusable React components and utilities
  * 4. Feature Components - Specific functionality components
  * 5. Application - Main app component and initialization
- * 
- * Total estimated size: ~200KB uncompressed (~60KB compressed)
+ * * Total estimated size: ~200KB uncompressed (~60KB compressed)
  * Performance: Optimized for progressive loading and minimal blocking
+ * * ENHANCED WITH: Async processing configuration and debug mode support
  */
 
 (function(window, document, undefined) {
@@ -93,6 +91,32 @@
         errors: []
     };
 
+    // ===== ENHANCED CONFIGURATION STATE =====
+    
+    let currentConfig = {
+        llm_provider: 'scaleway',
+        llm_model: 'llama-3.3-70b-instruct',
+        scw_secret_key: '',
+        local_llm_endpoint: 'http://localhost:11434/api/generate',
+        timeout: 5000,
+        temperature: 0.2,
+        max_tokens: 4096,
+        // New async/performance options
+        enable_async_processing: true,
+        max_concurrent_calls: 5,
+        detailed_llm_logging: true,
+        // New debug options
+        debug_mode: false,
+        force_rule_based: false,
+        verbose_error_reporting: true,
+        // Existing feature flags
+        enable_quality_check: true,
+        enable_multi_pass: true,
+        enable_mermaid: true,
+        enable_llm_enrichment: true,
+        mitre_enabled: true
+    };
+
     // ===== UTILITY FUNCTIONS =====
 
     /**
@@ -100,104 +124,14 @@
      */
     function log(message, type = 'info') {
         const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-        const prefix = `[${timestamp}] [ThreatModeling]`;
-        
-        switch (type) {
-            case 'error':
-                console.error(`${prefix} ❌ ${message}`);
-                break;
-            case 'warn':
-                console.warn(`${prefix} ⚠️ ${message}`);
-                break;
-            case 'success':
-                console.log(`${prefix} ✅ ${message}`);
-                break;
-            case 'info':
-            default:
-                console.log(`${prefix} ℹ️ ${message}`);
-                break;
-        }
+        const prefix = type === 'error' ? '❌' : type === 'warn' ? '⚠️' : '📦';
+        console.log(`[${timestamp}] ${prefix} ${message}`);
     }
 
     /**
-     * Show loading progress in UI
+     * Update loading UI
      */
     function updateLoadingUI(message, progress = 0) {
-        let loadingElement = document.getElementById('app-loading');
-        
-        if (!loadingElement) {
-            loadingElement = document.createElement('div');
-            loadingElement.id = 'app-loading';
-            loadingElement.innerHTML = `
-                <div style="
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: linear-gradient(135deg, #0a0e1a 0%, #1a1f2e 100%);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    z-index: 9999;
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                    color: #e0e0e0;
-                ">
-                    <div style="text-align: center; max-width: 400px; padding: 40px;">
-                        <div style="
-                            width: 60px;
-                            height: 60px;
-                            border: 4px solid #2d3548;
-                            border-top: 4px solid #8b5cf6;
-                            border-radius: 50%;
-                            animation: spin 1s linear infinite;
-                            margin: 0 auto 30px;
-                        "></div>
-                        <h2 style="
-                            font-size: 1.5em;
-                            margin-bottom: 10px;
-                            background: linear-gradient(135deg, #8b5cf6 0%, #3b82f6 100%);
-                            -webkit-background-clip: text;
-                            background-clip: text;
-                            -webkit-text-fill-color: transparent;
-                        ">🛡️ Advanced Threat Modeling</h2>
-                        <div id="loading-message" style="
-                            font-size: 1em;
-                            margin-bottom: 20px;
-                            min-height: 1.2em;
-                        ">Initializing...</div>
-                        <div style="
-                            width: 100%;
-                            height: 4px;
-                            background: #2d3548;
-                            border-radius: 2px;
-                            overflow: hidden;
-                        ">
-                            <div id="loading-progress" style="
-                                height: 100%;
-                                background: linear-gradient(90deg, #8b5cf6 0%, #3b82f6 100%);
-                                width: 0%;
-                                transition: width 0.3s ease;
-                            "></div>
-                        </div>
-                        <div id="loading-details" style="
-                            font-size: 0.8em;
-                            color: #9ca3af;
-                            margin-top: 15px;
-                            min-height: 1em;
-                        "></div>
-                    </div>
-                </div>
-                <style>
-                    @keyframes spin {
-                        0% { transform: rotate(0deg); }
-                        100% { transform: rotate(360deg); }
-                    }
-                </style>
-            `;
-            document.body.appendChild(loadingElement);
-        }
-
         const messageElement = document.getElementById('loading-message');
         const progressElement = document.getElementById('loading-progress');
         const detailsElement = document.getElementById('loading-details');
@@ -251,7 +185,10 @@
         });
     }
 
-        function loadScript(module) {
+    /**
+     * Load a single script module
+     */
+    function loadScript(module) {
         return new Promise((resolve, reject) => {
             if (loadingState.loaded.has(module.file)) {
                 resolve(module);
@@ -273,66 +210,54 @@
             }
 
             loadingState.loading.add(module.file);
-            const fullPath = SCRIPT_CONFIG.baseUrl + module.file;
-            log(`Loading ${module.name} from: ${fullPath}`);
-            updateLoadingUI(`Loading ${module.name}...`, (loadingState.loaded.size / SCRIPT_MODULES.length) * 100);
+            log(`Loading ${module.name}...`);
 
             const script = document.createElement('script');
-            script.src = fullPath;
+            script.src = `${SCRIPT_CONFIG.baseUrl}${module.file}?v=${SCRIPT_CONFIG.version}`;
             script.async = true;
-            script.defer = true;
 
             const timeout = setTimeout(() => {
                 cleanup();
-                handleError(new Error(`Timeout loading ${module.name} from ${fullPath}`));
+                reject(new Error(`Timeout loading ${module.name}`));
             }, SCRIPT_CONFIG.loadTimeout);
 
             function cleanup() {
                 clearTimeout(timeout);
+                script.removeEventListener('load', onLoad);
+                script.removeEventListener('error', onError);
                 loadingState.loading.delete(module.file);
-                if (script.parentNode) {
-                    script.parentNode.removeChild(script);
-                }
             }
 
-            function handleError(error) {
-                cleanup();
-                loadingState.failed.add(module.file);
-                loadingState.errors.push({ module: module.name, error: error.message });
-                log(`Failed to load ${module.name}: ${error.message}`, 'error');
-                reject(error);
-            }
-
-            function handleSuccess() {
+            function onLoad() {
                 cleanup();
                 
-                // Small delay to ensure script has executed
+                // Verify exports are available
                 setTimeout(() => {
-                    // Verify exports are available
-                    if (!checkExports(module)) {
-                        handleError(new Error(`Exports not available for ${module.name}`));
-                        return;
+                    if (checkExports(module)) {
+                        loadingState.loaded.add(module.file);
+                        log(`✅ ${module.name} loaded successfully`);
+                        resolve(module);
+                    } else {
+                        loadingState.failed.add(module.file);
+                        reject(new Error(`Module ${module.name} exports not found`));
                     }
-
-                    loadingState.loaded.add(module.file);
-                    loadingState.loading.delete(module.file);
-                    log(`Successfully loaded ${module.name}`, 'success');
-                    resolve(module);
-                }, 50);
+                }, 10); // Small delay to ensure exports are registered
             }
 
-            script.onload = handleSuccess;
-            script.onerror = (event) => {
-                log(`Script error for ${module.name}: ${event.message || 'Unknown error'}`, 'error');
-                handleError(new Error(`Script load error: ${event.message || 'Failed to load script'}`));
-            };
+            function onError() {
+                cleanup();
+                loadingState.failed.add(module.file);
+                reject(new Error(`Failed to load ${module.name}`));
+            }
 
+            script.addEventListener('load', onLoad);
+            script.addEventListener('error', onError);
             document.head.appendChild(script);
         });
     }
 
     /**
-     * Retry loading a failed module
+     * Retry loading a module
      */
     async function retryLoad(module) {
         const retryCount = loadingState.retryCount.get(module.file) || 0;
@@ -344,27 +269,26 @@
         loadingState.retryCount.set(module.file, retryCount + 1);
         loadingState.failed.delete(module.file);
         
-        log(`Retrying ${module.name} (attempt ${retryCount + 1}/${SCRIPT_CONFIG.retryAttempts})`, 'warn');
+        log(`Retrying ${module.name} (attempt ${retryCount + 1}/${SCRIPT_CONFIG.retryAttempts})...`, 'warn');
         
         await new Promise(resolve => setTimeout(resolve, SCRIPT_CONFIG.retryDelay));
         return loadScript(module);
     }
 
     /**
-     * Load modules in dependency order
+     * Load all modules in dependency order
      */
-    async function loadModules() {
+    async function loadAllModules() {
         const toLoad = [...SCRIPT_MODULES];
         const loaded = [];
 
-        updateLoadingUI('Checking dependencies...', 0);
-
         while (toLoad.length > 0) {
+            // Find modules that can be loaded (dependencies satisfied)
             const readyModules = toLoad.filter(module => checkDependencies(module));
             
             if (readyModules.length === 0) {
                 const remaining = toLoad.map(m => m.name).join(', ');
-                throw new Error(`Circular dependency detected or missing dependencies. Remaining: ${remaining}`);
+                throw new Error(`Dependency deadlock. Remaining: ${remaining}`);
             }
 
             // Load ready modules in parallel
@@ -412,6 +336,289 @@
         return loaded;
     }
 
+    // ===== ENHANCED CONFIGURATION FUNCTIONS =====
+
+    function loadSettings() {
+        try {
+            const saved = localStorage.getItem('threat_modeling_config');
+            if (saved) {
+                const config = JSON.parse(saved);
+                currentConfig = { ...currentConfig, ...config };
+                
+                // Update form fields
+                updateFormFromConfig();
+                console.log('✅ Loaded saved configuration');
+            }
+        } catch (error) {
+            console.error('❌ Error loading saved configuration:', error);
+        }
+    }
+
+    function updateFormFromConfig() {
+        // LLM Configuration
+        setFieldValue('llm-provider', currentConfig.llm_provider);
+        setFieldValue('llm-model', currentConfig.llm_model);
+        setFieldValue('scw-api-key', currentConfig.scw_secret_key);
+        setFieldValue('local-endpoint', currentConfig.local_llm_endpoint);
+        
+        // Processing Parameters
+        setFieldValue('timeout', currentConfig.timeout);
+        setFieldValue('temperature', currentConfig.temperature);
+        setFieldValue('max-tokens', currentConfig.max_tokens);
+        
+        // Async/Performance Options
+        setFieldValue('enable-async-processing', currentConfig.enable_async_processing);
+        setFieldValue('max-concurrent-calls', currentConfig.max_concurrent_calls);
+        setFieldValue('detailed-llm-logging', currentConfig.detailed_llm_logging);
+        
+        // Debug Options
+        setFieldValue('debug-mode', currentConfig.debug_mode);
+        setFieldValue('force-rule-based', currentConfig.force_rule_based);
+        setFieldValue('verbose-error-reporting', currentConfig.verbose_error_reporting);
+        
+        // Feature Flags
+        setFieldValue('enable-quality-check', currentConfig.enable_quality_check);
+        setFieldValue('enable-multi-pass', currentConfig.enable_multi_pass);
+        setFieldValue('enable-mermaid', currentConfig.enable_mermaid);
+        setFieldValue('enable-llm-enrichment', currentConfig.enable_llm_enrichment);
+        setFieldValue('mitre-enabled', currentConfig.mitre_enabled);
+
+        // **FIX:** Update conditional UI elements after loading config from storage
+        updateProviderFields();
+        updateAsyncFields();
+        updateDebugFields();
+    }
+
+    function setFieldValue(fieldId, value) {
+        const field = document.getElementById(fieldId);
+        if (field) {
+            if (field.type === 'checkbox') {
+                field.checked = Boolean(value);
+            } else {
+                field.value = value;
+            }
+        }
+    }
+
+    function getFieldValue(fieldId) {
+        const field = document.getElementById(fieldId);
+        if (field) {
+            if (field.type === 'checkbox') {
+                return field.checked;
+            } else if (field.type === 'number') {
+                return Number(field.value);
+            } else {
+                return field.value;
+            }
+        }
+        return null;
+    }
+
+    function updateProviderFields() {
+        const provider = getFieldValue('llm-provider');
+        const apiKeyGroup = document.getElementById('api-key-group');
+        const localEndpointGroup = document.getElementById('local-endpoint-group');
+        
+        if (provider === 'scaleway') {
+            if (apiKeyGroup) apiKeyGroup.style.display = 'block';
+            if (localEndpointGroup) localEndpointGroup.style.display = 'none';
+        } else if (provider === 'ollama') {
+            if (apiKeyGroup) apiKeyGroup.style.display = 'none';
+            if (localEndpointGroup) localEndpointGroup.style.display = 'block';
+        }
+    }
+
+    function updateAsyncFields() {
+        const asyncEnabled = getFieldValue('enable-async-processing');
+        const maxConcurrentField = document.getElementById('max-concurrent-calls');
+        const maxConcurrentGroup = maxConcurrentField?.closest('.form-group');
+        
+        if (maxConcurrentGroup) {
+            maxConcurrentGroup.style.opacity = asyncEnabled ? '1' : '0.5';
+            if (maxConcurrentField) maxConcurrentField.disabled = !asyncEnabled;
+        }
+    }
+
+    function updateDebugFields() {
+        const debugMode = getFieldValue('debug-mode');
+        const forceRuleBased = getFieldValue('force-rule-based');
+        
+        // If force rule-based is enabled, some other options become irrelevant
+        const affectedFields = ['enable-async-processing', 'max-concurrent-calls', 'detailed-llm-logging'];
+        
+        affectedFields.forEach(fieldId => {
+            const field = document.getElementById(fieldId);
+            const group = field?.closest('.form-group') || field?.closest('.checkbox-group');
+            if (group) {
+                group.style.opacity = forceRuleBased ? '0.5' : '1';
+                if (field) {
+                    field.disabled = forceRuleBased;
+                }
+            }
+        });
+        
+        // Update help text based on debug mode
+        const debugHelp = document.querySelector('#debug-mode + label + .form-help');
+        if (debugHelp && debugMode) {
+            debugHelp.style.color = '#f59e0b';
+            debugHelp.style.fontWeight = '500';
+        } else if (debugHelp) {
+            debugHelp.style.color = '';
+            debugHelp.style.fontWeight = '';
+        }
+    }
+
+    function validateConfiguration(config) {
+        const errors = [];
+        
+        // Validate required fields based on provider
+        if (config.llm_provider === 'scaleway' && !config.scw_secret_key && !config.debug_mode && !config.force_rule_based) {
+            errors.push('Scaleway API key is required unless debug mode or force rule-based is enabled');
+        }
+        
+        // Validate numeric ranges
+        if (config.timeout < 60 || config.timeout > 10000) {
+            errors.push('Timeout must be between 60 and 10000 seconds');
+        }
+        
+        if (config.temperature < 0 || config.temperature > 1) {
+            errors.push('Temperature must be between 0 and 1');
+        }
+        
+        if (config.max_tokens < 1000 || config.max_tokens > 8192) {
+            errors.push('Max tokens must be between 1000 and 8192');
+        }
+        
+        if (config.max_concurrent_calls < 1 || config.max_concurrent_calls > 20) {
+            errors.push('Max concurrent calls must be between 1 and 20');
+        }
+        
+        // Validate logical combinations
+        if (config.force_rule_based && config.enable_async_processing) {
+            // This is not necessarily an error, but we should warn
+            console.warn('⚠️ Async processing is less beneficial with force rule-based mode');
+        }
+        
+        if (config.debug_mode && !config.force_rule_based && config.llm_provider === 'scaleway' && !config.scw_secret_key) {
+            errors.push('Debug mode requires either an API key or force rule-based mode');
+        }
+        
+        return errors;
+    }
+
+    function saveSettings() {
+        try {
+            // Collect all configuration values
+            const newConfig = {
+                // LLM Configuration
+                llm_provider: getFieldValue('llm-provider'),
+                llm_model: getFieldValue('llm-model'),
+                scw_secret_key: getFieldValue('scw-api-key'),
+                local_llm_endpoint: getFieldValue('local-endpoint'),
+                
+                // Processing Parameters
+                timeout: getFieldValue('timeout'),
+                temperature: getFieldValue('temperature'),
+                max_tokens: getFieldValue('max-tokens'),
+                
+                // Async/Performance Options
+                enable_async_processing: getFieldValue('enable-async-processing'),
+                max_concurrent_calls: getFieldValue('max-concurrent-calls'),
+                detailed_llm_logging: getFieldValue('detailed-llm-logging'),
+                
+                // Debug Options
+                debug_mode: getFieldValue('debug-mode'),
+                force_rule_based: getFieldValue('force-rule-based'),
+                verbose_error_reporting: getFieldValue('verbose-error-reporting'),
+                
+                // Feature Flags
+                enable_quality_check: getFieldValue('enable-quality-check'),
+                enable_multi_pass: getFieldValue('enable-multi-pass'),
+                enable_mermaid: getFieldValue('enable-mermaid'),
+                enable_llm_enrichment: getFieldValue('enable-llm-enrichment'),
+                mitre_enabled: getFieldValue('mitre-enabled')
+            };
+            
+            // Validate configuration
+            const validationErrors = validateConfiguration(newConfig);
+            if (validationErrors.length > 0) {
+                alert('Configuration errors:\n' + validationErrors.join('\n'));
+                return;
+            }
+            
+            // Update current config
+            currentConfig = { ...currentConfig, ...newConfig };
+            
+            // Save to localStorage
+            localStorage.setItem('threat_modeling_config', JSON.stringify(currentConfig));
+            
+            // Send to backend
+            fetch('/api/config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(currentConfig)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('✅ Configuration saved successfully');
+                    showNotification('Settings saved successfully!', 'success');
+                    closeSettingsModal();
+                } else {
+                    console.error('❌ Failed to save configuration:', data.error);
+                    showNotification('Failed to save settings: ' + data.error, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('❌ Error saving configuration:', error);
+                showNotification('Error saving settings: ' + error.message, 'error');
+            });
+            
+        } catch (error) {
+            console.error('❌ Error in saveSettings:', error);
+            showNotification('Error saving settings: ' + error.message, 'error');
+        }
+    }
+
+    function showNotification(message, type = 'info') {
+        // Create notification element
+        const notification = document.createElement('div');
+        notification.className = `notification notification-${type}`;
+        notification.innerHTML = `
+            <span>${message}</span>
+            <button onclick="this.parentElement.remove()" style="background: none; border: none; color: inherit; font-size: 1.2em; cursor: pointer; margin-left: 10px;">&times;</button>
+        `;
+        
+        // Add to page
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            if (notification.parentElement) {
+                notification.remove();
+            }
+        }, 5000);
+    }
+
+    function openSettingsModal() {
+        const modal = document.getElementById('settingsModal');
+        if (modal) {
+            modal.style.display = 'flex';
+            updateProviderFields();
+            updateAsyncFields();
+            updateDebugFields();
+        }
+    }
+
+    function closeSettingsModal() {
+        const modal = document.getElementById('settingsModal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+    }
+
     /**
      * Initialize the application after all modules are loaded
      */
@@ -427,142 +634,206 @@
         }
 
         // Verify our modules are available
-        const requiredModules = ['CoreUtilities', 'UIComponents', 'SidebarComponents', 'PipelineComponents', 'ReviewSystem'];
+        const requiredModules = ['CoreUtilities', 'UIComponents', 'SidebarComponents', 'PipelineComponents', 'ReviewSystem', 'ThreatModelingApp'];
         const missingModules = requiredModules.filter(name => !window[name]);
         
         if (missingModules.length > 0) {
             throw new Error(`Missing required modules: ${missingModules.join(', ')}`);
         }
 
-        log('All modules loaded successfully', 'success');
-        updateLoadingUI('Starting application...', 100);
+        // Initialize configuration management
+        loadSettings();
 
-        // Initialize core utilities first
-        if (window.CoreUtilities && window.CoreUtilities.initializeCoreUtilities) {
-            window.CoreUtilities.initializeCoreUtilities();
-        }
-
-        // Initialize the main application
-        setTimeout(() => {
-            removeLoadingUI();
+        // Set up event listeners for configuration
+        document.addEventListener('change', function(event) {
+            const fieldId = event.target.id;
             
-            if (window.ThreatModelingApp && window.ThreatModelingApp.initializeApp) {
-                window.ThreatModelingApp.initializeApp();
-            } else {
-                log('ThreatModelingApp not available, falling back to manual initialization', 'warn');
-                // Fallback initialization code could go here
+            if (fieldId === 'llm-provider') {
+                updateProviderFields();
+            } else if (fieldId === 'enable-async-processing') {
+                updateAsyncFields();
+            } else if (fieldId === 'debug-mode' || fieldId === 'force-rule-based') {
+                updateDebugFields();
             }
-        }, 300);
-    }
+        });
 
-    /**
-     * Handle loading errors
-     */
-    function handleLoadingError(error) {
-        log(`Application loading failed: ${error.message}`, 'error');
+        // Close modal when clicking outside
+        document.addEventListener('click', function(event) {
+            const modal = document.getElementById('settingsModal');
+            if (event.target === modal) {
+                closeSettingsModal();
+            }
+        });
+
+        // Mount the React application
+        updateLoadingUI('Mounting React application...', 98);
         
-        const errorDetails = loadingState.errors.length > 0 
-            ? `\n\nDetails:\n${loadingState.errors.map(e => `- ${e.module}: ${e.error}`).join('\n')}`
-            : '';
-
-        const errorHTML = `
-            <div style="
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: linear-gradient(135deg, #1a0000 0%, #2d0000 100%);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 9999;
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                color: #ff6b6b;
-                padding: 20px;
-            ">
-                <div style="text-align: center; max-width: 600px;">
-                    <div style="font-size: 4em; margin-bottom: 20px;">❌</div>
-                    <h1 style="font-size: 2em; margin-bottom: 15px; color: #ff4757;">Application Load Error</h1>
-                    <p style="font-size: 1.1em; margin-bottom: 20px; line-height: 1.5;">
-                        Failed to load the threat modeling application.
-                    </p>
-                    <details style="text-align: left; background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                        <summary style="cursor: pointer; font-weight: bold;">Technical Details</summary>
-                        <pre style="margin-top: 10px; font-size: 0.9em; color: #ffcccc;">${error.message}${errorDetails}</pre>
-                    </details>
-                    <div style="display: flex; gap: 15px; justify-content: center; flex-wrap: wrap;">
-                        <button onclick="location.reload()" style="
-                            padding: 12px 24px;
-                            background: #ff4757;
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            cursor: pointer;
-                            font-size: 1em;
-                            font-weight: 600;
-                        ">Reload Page</button>
-                        <button onclick="localStorage.clear(); location.reload()" style="
-                            padding: 12px 24px;
-                            background: #ffa502;
-                            color: white;
-                            border: none;
-                            border-radius: 6px;
-                            cursor: pointer;
-                            font-size: 1em;
-                            font-weight: 600;
-                        ">Clear Cache & Reload</button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        document.body.innerHTML = errorHTML;
-    }
-
-    // ===== MAIN LOADING PROCESS =====
-
-    /**
-     * Main application loading function
-     */
-    async function loadApplication() {
         try {
-            log('Starting application loading process...', 'info');
-            log(`Loading ${SCRIPT_MODULES.length} modules...`, 'info');
+            const rootElement = document.getElementById('root');
+            if (!rootElement) {
+                throw new Error('Root element not found');
+            }
 
-            const loadedModules = await loadModules();
+            // Create React root and render
+            const root = ReactDOM.createRoot(rootElement);
+            root.render(React.createElement(window.ThreatModelingApp));
             
-            log(`Successfully loaded ${loadedModules.length} modules`, 'success');
+            log('✅ Application initialized successfully');
             
-            await initializeApplication();
-            
-            const totalTime = ((Date.now() - loadingState.startTime) / 1000).toFixed(2);
-            log(`Application loaded successfully in ${totalTime}s`, 'success');
+            // Remove loading UI after a brief delay
+            setTimeout(() => {
+                removeLoadingUI();
+            }, 500);
             
         } catch (error) {
-            handleLoadingError(error);
+            throw new Error(`Failed to mount React application: ${error.message}`);
         }
     }
 
-    // ===== AUTO-START =====
-
-    // Start loading when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', loadApplication);
-    } else {
-        // DOM is already ready
-        loadApplication();
+    /**
+     * Handle initialization errors
+     */
+    function handleInitializationError(error) {
+        log(`Initialization failed: ${error.message}`, 'error');
+        
+        // Update UI to show error
+        updateLoadingUI('Initialization failed', 100);
+        
+        const messageElement = document.getElementById('loading-message');
+        if (messageElement) {
+            messageElement.textContent = `❌ ${error.message}`;
+            messageElement.style.color = '#ef4444';
+        }
+        
+        // Log detailed error for debugging
+        console.error('Detailed error:', error);
+        loadingState.errors.push(error);
+        
+        // Show retry option
+        setTimeout(() => {
+            const loadingElement = document.getElementById('app-loading');
+            if (loadingElement) {
+                const retryButton = document.createElement('button');
+                retryButton.textContent = 'Retry';
+                retryButton.style.cssText = 'margin-top: 20px; padding: 10px 20px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer;';
+                retryButton.onclick = () => location.reload();
+                loadingElement.appendChild(retryButton);
+            }
+        }, 1000);
     }
 
-    // ===== GLOBAL EXPORTS =====
+    // ===== MAIN INITIALIZATION =====
+
+    /**
+     * Start the application loading process
+     */
+    async function startApplication() {
+        try {
+            log('🚀 Starting Threat Modeling Dashboard...');
+            
+            // Load all JavaScript modules
+            updateLoadingUI('Loading modules...', 10);
+            await loadAllModules();
+            
+            // Initialize the application
+            initializeApplication();
+            
+            const totalTime = ((Date.now() - loadingState.startTime) / 1000).toFixed(2);
+            log(`✅ Application loaded successfully in ${totalTime}s`);
+            
+        } catch (error) {
+            handleInitializationError(error);
+        }
+    }
+
+    // ===== EXPOSE GLOBAL FUNCTIONS =====
+    
+    // Expose configuration functions globally under a single namespace
+    window.ThreatModelingConfig = {
+        currentConfig,
+        saveSettings,
+        loadSettings,
+        validateConfiguration,
+        showNotification,
+        openSettingsModal,
+        closeSettingsModal,
+        updateProviderFields,
+        updateAsyncFields,
+        updateDebugFields
+    };
 
     // Export loading utilities for debugging
     window.ThreatModelingLoader = {
         loadingState,
         SCRIPT_MODULES,
         SCRIPT_CONFIG,
-        loadApplication,
+        startApplication, // Expose the main start function
         log
     };
+
+    // ===== START APPLICATION =====
+    
+    // Add CSS for notifications
+    const notificationCSS = `
+    .notification {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        padding: 12px 16px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        z-index: 10000;
+        display: flex;
+        align-items: center;
+        max-width: 400px;
+        animation: slideIn 0.3s ease-out;
+    }
+
+    .notification-success {
+        background: #10b981;
+        color: white;
+    }
+
+    .notification-error {
+        background: #ef4444;
+        color: white;
+    }
+
+    .notification-info {
+        background: #3b82f6;
+        color: white;
+    }
+
+    .notification-warning {
+        background: #f59e0b;
+        color: white;
+    }
+
+    @keyframes slideIn {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    `;
+
+    // Inject CSS only if not already present
+    if (!document.querySelector('#notification-styles')) {
+        const style = document.createElement('style');
+        style.id = 'notification-styles';
+        style.textContent = notificationCSS;
+        document.head.appendChild(style);
+    }
+
+    // Start loading when DOM is ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startApplication);
+    } else {
+        startApplication();
+    }
 
 })(window, document);

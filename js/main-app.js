@@ -484,11 +484,17 @@ const App = () => {
 
     // ===== SETTINGS HANDLERS =====
 
+    // ===== SETTINGS HANDLERS =====
     const openSettings = React.useCallback(() => {
-        // This would typically open a settings modal
-        // For now, we'll just show a notification
-        if (window.showNotification) {
-            window.showNotification('Settings panel coming soon!', 'info');
+        // Call the global function to open settings modal
+        if (window.openSettingsModal) {
+            window.openSettingsModal();
+        } else {
+            // Fallback: directly show the modal
+            const modal = document.getElementById('settingsModal');
+            if (modal) {
+                modal.style.display = 'flex';
+            }
         }
     }, []);
 

@@ -1,5 +1,6 @@
 """
 Configuration settings for the threat modeling pipeline.
+Enhanced with async processing and debug mode options.
 """
 import os
 from dotenv import load_dotenv
@@ -19,6 +20,16 @@ class Config:
             'custom_system_prompt': os.getenv('CUSTOM_SYSTEM_PROMPT', ''),
             'scw_api_url': os.getenv('SCW_API_URL', 'https://api.scaleway.ai/v1'),
             'scw_secret_key': os.getenv('SCW_SECRET_KEY') or os.getenv('SCW_API_KEY'),
+            
+            # Async Processing Configuration
+            'enable_async_processing': os.getenv('ENABLE_ASYNC_PROCESSING', 'true').lower() == 'true',
+            'max_concurrent_calls': int(os.getenv('MAX_CONCURRENT_CALLS', '5')),
+            'detailed_llm_logging': os.getenv('DETAILED_LLM_LOGGING', 'true').lower() == 'true',
+            
+            # Debug Configuration
+            'debug_mode': os.getenv('DEBUG_MODE', 'false').lower() == 'true',
+            'force_rule_based': os.getenv('FORCE_RULE_BASED', 'false').lower() == 'true',
+            'verbose_error_reporting': os.getenv('VERBOSE_ERROR_REPORTING', 'true').lower() == 'true',
             
             # Directories
             'input_dir': os.getenv('INPUT_DIR', './input_documents'),
@@ -44,25 +55,54 @@ class Config:
             'mitre_enabled': os.getenv('MITRE_ENABLED', 'true').lower() == 'true',
             'mitre_version': os.getenv('MITRE_VERSION', 'v13.1'),
             
-            # Analysis Parameters
-            'confidence_threshold': float(os.getenv('CONFIDENCE_THRESHOLD', '0.75')),
-            'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD', '0.70')),
-            'cve_relevance_years': int(os.getenv('CVE_RELEVANCE_YEARS', '5')),
-            'max_path_length': int(os.getenv('MAX_PATH_LENGTH', '5')),
-            'max_paths_to_analyze': int(os.getenv('MAX_PATHS_TO_ANALYZE', '20')),
-            'max_components_to_analyze': int(os.getenv('MAX_COMPONENTS_TO_ANALYZE', '20')),
+            # Threat Generation Specific
             'min_risk_score': int(os.getenv('MIN_RISK_SCORE', '3')),
-            
-            # External APIs
-            'nvd_api_url': os.getenv('NVD_API_URL', 'https://services.nvd.nist.gov/rest/json/cves/2.0'),
-            'cisa_kev_url': os.getenv('CISA_KEV_URL', 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json'),
-            
-            # Logging
-            'log_level': os.getenv('LOG_LEVEL', 'INFO'),
+            'max_components_to_analyze': int(os.getenv('MAX_COMPONENTS_TO_ANALYZE', '20')),
+            'similarity_threshold': float(os.getenv('SIMILARITY_THRESHOLD', '0.70')),
         }
-
+    
     @staticmethod
-    def ensure_directories(*directories):
-        """Ensure directories exist."""
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
+    def ensure_directories(*dirs):
+        """Ensure all provided directories exist."""
+        for directory in dirs:
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory, exist_ok=True)
+    
+    @staticmethod
+    def validate_async_config(config):
+        """Validate async configuration parameters."""
+        errors = []
+        
+        # Validate max concurrent calls
+        max_concurrent = config.get('max_concurrent_calls', 5)
+        if not isinstance(max_concurrent, int) or max_concurrent < 1 or max_concurrent > 50:
+            errors.append("max_concurrent_calls must be between 1 and 50")
+        
+        # Check if async is enabled but provider doesn't support it
+        if config.get('enable_async_processing') and config.get('llm_provider') == 'ollama':
+            # Note: Ollama can still work with async via aiohttp
+            pass
+        
+        return errors
+    
+    @staticmethod
+    def get_llm_call_timeout(config):
+        """Get timeout for individual LLM calls based on async mode."""
+        base_timeout = config.get('timeout', 5000)
+        
+        if config.get('enable_async_processing'):
+            # Shorter timeout per call in async mode
+            return min(base_timeout // 2, 300)  # Max 5 minutes per call
+        else:
+            # Longer timeout for sync mode
+            return base_timeout
+    
+    @staticmethod
+    def should_use_debug_fallback(config):
+        """Determine if debug fallback should be used."""
+        return config.get('debug_mode', False) and not config.get('force_rule_based', False)
+    
+    @staticmethod
+    def should_force_rule_based(config):
+        """Determine if rule-based extraction should be forced."""
+        return config.get('force_rule_based', False)
