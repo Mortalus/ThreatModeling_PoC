@@ -9,6 +9,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const [validationErrors, setValidationErrors] = React.useState<string[]>([]);
   const [activeStep, setActiveStep] = React.useState(1);
 
+  // Add state for Ollama models
+  const [ollamaModels, setOllamaModels] = React.useState<string[]>([]);
+  const [loadingOllamaModels, setLoadingOllamaModels] = React.useState(false);
+  const [ollamaError, setOllamaError] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (isOpen) {
       const loadedSettings = SettingsStorage.loadSettings();
@@ -21,6 +26,41 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       });
     }
   }, [isOpen]);
+
+  // Fetch Ollama models when provider changes to ollama
+  React.useEffect(() => {
+    if (config.llm.provider === 'ollama' && isOpen) {
+      fetchOllamaModels();
+    }
+  }, [config.llm.provider, isOpen]);
+
+  const fetchOllamaModels = async () => {
+    setLoadingOllamaModels(true);
+    setOllamaError(null);
+    
+    try {
+      const response = await fetch('/api/ollama/models');
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        const modelNames = data.models.map((m: any) => m.name);
+        setOllamaModels(modelNames);
+        
+        // If current model is not in the list, select the first one
+        if (modelNames.length > 0 && !modelNames.includes(config.llm.model)) {
+          updateConfig('llm.model', modelNames[0]);
+        }
+      } else {
+        setOllamaError(data.error || 'Failed to fetch models');
+        setOllamaModels([]);
+      }
+    } catch (error) {
+      setOllamaError('Failed to connect to Ollama');
+      setOllamaModels([]);
+    } finally {
+      setLoadingOllamaModels(false);
+    }
+  };
 
   const handleSave = async () => {
     const errors = SettingsValidator.validate(config);
@@ -68,6 +108,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
     });
   };
 
+  // Update the renderLLMSettings function
   const renderLLMSettings = () => (
     <div className="settings-section">
       <h3>🤖 LLM Configuration</h3>
@@ -96,16 +137,56 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
       </div>
 
       <div className="form-group">
-        <label>Model</label>
+        <label>
+          Model
+          {config.llm.provider === 'ollama' && (
+            <button
+              type="button"
+              className="btn-icon-small"
+              onClick={fetchOllamaModels}
+              disabled={loadingOllamaModels}
+              style={{ marginLeft: '10px' }}
+              title="Refresh Ollama models"
+            >
+              {loadingOllamaModels ? '⏳' : '🔄'}
+            </button>
+          )}
+        </label>
+        
+        {config.llm.provider === 'ollama' && ollamaError && (
+          <div className="form-error">{ollamaError}</div>
+        )}
+        
         <select 
           value={config.llm.model} 
           onChange={(e: React.ChangeEvent<HTMLSelectElement>) => updateConfig('llm.model', e.target.value)}
           className="form-select"
+          disabled={config.llm.provider === 'ollama' && loadingOllamaModels}
         >
-          {LLM_PROVIDERS[config.llm.provider]?.models.map((model: string) => (
-            <option key={model} value={model}>{model}</option>
-          ))}
+          {config.llm.provider === 'ollama' ? (
+            // For Ollama, use fetched models
+            ollamaModels.length > 0 ? (
+              ollamaModels.map((model: string) => (
+                <option key={model} value={model}>{model}</option>
+              ))
+            ) : (
+              <option value="">
+                {loadingOllamaModels ? 'Loading models...' : 'No models available'}
+              </option>
+            )
+          ) : (
+            // For other providers, use predefined models
+            LLM_PROVIDERS[config.llm.provider]?.models.map((model: string) => (
+              <option key={model} value={model}>{model}</option>
+            ))
+          )}
         </select>
+        
+        {config.llm.provider === 'ollama' && ollamaModels.length > 0 && (
+          <small className="form-help">
+            Found {ollamaModels.length} models in your Ollama instance
+          </small>
+        )}
       </div>
 
       {(config.llm.provider === 'azure' || config.llm.provider === 'ollama') && (
@@ -114,14 +195,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
           <input
             type="text"
             value={config.llm.endpoint || ''}
-            onChange={e => updateConfig('llm.endpoint', e.target.value)}
+            onChange={e => {
+              updateConfig('llm.endpoint', e.target.value);
+              // If Ollama endpoint changes, refetch models
+              if (config.llm.provider === 'ollama') {
+                fetchOllamaModels();
+              }
+            }}
             placeholder={config.llm.provider === 'azure' ? 'https://your-resource.openai.azure.com' : 'http://localhost:11434'}
             className="form-input"
           />
           <small className="form-help">
             {config.llm.provider === 'azure' 
               ? 'Your Azure OpenAI endpoint URL'
-              : 'Local Ollama server URL'}
+              : 'Local Ollama server URL (default: http://localhost:11434)'}
           </small>
         </div>
       )}

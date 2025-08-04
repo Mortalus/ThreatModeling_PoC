@@ -389,3 +389,67 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
                 'mitre_integration': True
             }
         })
+    
+    @app.route('/api/ollama/models', methods=['GET'])
+    def get_ollama_models():
+        """Get available models from Ollama instance."""
+        try:
+            import requests
+            
+            # Get Ollama endpoint from config
+            ollama_endpoint = runtime_config.get('local_llm_endpoint', 'http://localhost:11434')
+            
+            # Extract base URL (remove /api/generate if present)
+            base_url = ollama_endpoint.replace('/api/generate', '').rstrip('/')
+            
+            # Call Ollama API to list models
+            response = requests.get(f"{base_url}/api/tags", timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                models = []
+                
+                # Extract model names from the response
+                for model in data.get('models', []):
+                    model_info = {
+                        'name': model.get('name', ''),
+                        'size': model.get('size', 0),
+                        'modified': model.get('modified_at', ''),
+                        'digest': model.get('digest', '')
+                    }
+                    models.append(model_info)
+                
+                # Sort by name
+                models.sort(key=lambda x: x['name'])
+                
+                return jsonify({
+                    'status': 'success',
+                    'models': models,
+                    'endpoint': base_url
+                })
+            else:
+                return jsonify({
+                    'status': 'error',
+                    'error': 'Failed to fetch models from Ollama',
+                    'details': f'Status code: {response.status_code}'
+                }), 500
+                
+        except requests.exceptions.ConnectionError:
+            return jsonify({
+                'status': 'error',
+                'error': 'Cannot connect to Ollama',
+                'details': 'Make sure Ollama is running on the specified endpoint'
+            }), 503
+        except requests.exceptions.Timeout:
+            return jsonify({
+                'status': 'error',
+                'error': 'Ollama request timed out',
+                'details': 'The Ollama server took too long to respond'
+            }), 504
+        except Exception as e:
+            logger.error(f"Ollama models fetch error: {e}")
+            return jsonify({
+                'status': 'error',
+                'error': 'Failed to fetch Ollama models',
+                'details': str(e)
+            }), 500

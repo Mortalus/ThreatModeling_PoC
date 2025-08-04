@@ -410,3 +410,78 @@
     color: #7c3aed;
   }
 }
+/* Small icon button for refreshing models */
+.btn-icon-small {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    vertical-align: middle;
+}
+
+.btn-icon-small:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--color-primary);
+}
+
+.btn-icon-small:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Form error message */
+.form-error {
+    color: var(--color-error);
+    font-size: 0.85em;
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--color-error);
+}
+
+/* Ollama-specific styles */
+.settings-section .form-group label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ollama-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.85em;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+}
+
+.ollama-status.connected {
+    color: var(--color-success);
+    background: rgba(34, 197, 94, 0.1);
+}
+
+.ollama-status.disconnected {
+    color: var(--color-error);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* Loading state for select */
+select.form-select:disabled {
+    opacity: 0.7;
+    cursor: wait;
+}
+
+/* Refresh button animation */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.btn-icon-small:disabled:has(⏳) {
+    animation: spin 1s linear infinite;
+}

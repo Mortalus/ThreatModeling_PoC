@@ -56,6 +56,10 @@ var SettingsModal = function (_a) {
     var _e = React.useState(null), saveMessage = _e[0], setSaveMessage = _e[1];
     var _f = React.useState([]), validationErrors = _f[0], setValidationErrors = _f[1];
     var _g = React.useState(1), activeStep = _g[0], setActiveStep = _g[1];
+    // Add state for Ollama models
+    var _h = React.useState([]), ollamaModels = _h[0], setOllamaModels = _h[1];
+    var _j = React.useState(false), loadingOllamaModels = _j[0], setLoadingOllamaModels = _j[1];
+    var _k = React.useState(null), ollamaError = _k[0], setOllamaError = _k[1];
     React.useEffect(function () {
         if (isOpen) {
             var loadedSettings = SettingsStorage.loadSettings();
@@ -67,8 +71,55 @@ var SettingsModal = function (_a) {
             });
         }
     }, [isOpen]);
+    // Fetch Ollama models when provider changes to ollama
+    React.useEffect(function () {
+        if (config.llm.provider === 'ollama' && isOpen) {
+            fetchOllamaModels();
+        }
+    }, [config.llm.provider, isOpen]);
+    var fetchOllamaModels = function () { return __awaiter(void 0, void 0, void 0, function () {
+        var response, data, modelNames, error_1;
+        return __generator(this, function (_a) {
+            switch (_a.label) {
+                case 0:
+                    setLoadingOllamaModels(true);
+                    setOllamaError(null);
+                    _a.label = 1;
+                case 1:
+                    _a.trys.push([1, 4, 5, 6]);
+                    return [4 /*yield*/, fetch('/api/ollama/models')];
+                case 2:
+                    response = _a.sent();
+                    return [4 /*yield*/, response.json()];
+                case 3:
+                    data = _a.sent();
+                    if (data.status === 'success') {
+                        modelNames = data.models.map(function (m) { return m.name; });
+                        setOllamaModels(modelNames);
+                        // If current model is not in the list, select the first one
+                        if (modelNames.length > 0 && !modelNames.includes(config.llm.model)) {
+                            updateConfig('llm.model', modelNames[0]);
+                        }
+                    }
+                    else {
+                        setOllamaError(data.error || 'Failed to fetch models');
+                        setOllamaModels([]);
+                    }
+                    return [3 /*break*/, 6];
+                case 4:
+                    error_1 = _a.sent();
+                    setOllamaError('Failed to connect to Ollama');
+                    setOllamaModels([]);
+                    return [3 /*break*/, 6];
+                case 5:
+                    setLoadingOllamaModels(false);
+                    return [7 /*endfinally*/];
+                case 6: return [2 /*return*/];
+            }
+        });
+    }); };
     var handleSave = function () { return __awaiter(void 0, void 0, void 0, function () {
-        var errors, result, error_1;
+        var errors, result, error_2;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0:
@@ -98,7 +149,7 @@ var SettingsModal = function (_a) {
                     }
                     return [3 /*break*/, 5];
                 case 3:
-                    error_1 = _a.sent();
+                    error_2 = _a.sent();
                     setSaveMessage({ type: 'error', text: 'An unexpected error occurred' });
                     return [3 /*break*/, 5];
                 case 4:
@@ -122,6 +173,7 @@ var SettingsModal = function (_a) {
             return newConfig;
         });
     };
+    // Update the renderLLMSettings function
     var renderLLMSettings = function () {
         var _a;
         return (React.createElement("div", { className: "settings-section" },
@@ -138,14 +190,31 @@ var SettingsModal = function (_a) {
                         }
                     }, className: "form-select" }, Object.values(LLM_PROVIDERS).map(function (provider) { return (React.createElement("option", { key: provider.id, value: provider.id }, provider.name)); }))),
             React.createElement("div", { className: "form-group" },
-                React.createElement("label", null, "Model"),
-                React.createElement("select", { value: config.llm.model, onChange: function (e) { return updateConfig('llm.model', e.target.value); }, className: "form-select" }, (_a = LLM_PROVIDERS[config.llm.provider]) === null || _a === void 0 ? void 0 : _a.models.map(function (model) { return (React.createElement("option", { key: model, value: model }, model)); }))),
+                React.createElement("label", null,
+                    "Model",
+                    config.llm.provider === 'ollama' && (React.createElement("button", { type: "button", className: "btn-icon-small", onClick: fetchOllamaModels, disabled: loadingOllamaModels, style: { marginLeft: '10px' }, title: "Refresh Ollama models" }, loadingOllamaModels ? '⏳' : '🔄'))),
+                config.llm.provider === 'ollama' && ollamaError && (React.createElement("div", { className: "form-error" }, ollamaError)),
+                React.createElement("select", { value: config.llm.model, onChange: function (e) { return updateConfig('llm.model', e.target.value); }, className: "form-select", disabled: config.llm.provider === 'ollama' && loadingOllamaModels }, config.llm.provider === 'ollama' ? (
+                // For Ollama, use fetched models
+                ollamaModels.length > 0 ? (ollamaModels.map(function (model) { return (React.createElement("option", { key: model, value: model }, model)); })) : (React.createElement("option", { value: "" }, loadingOllamaModels ? 'Loading models...' : 'No models available'))) : (
+                // For other providers, use predefined models
+                (_a = LLM_PROVIDERS[config.llm.provider]) === null || _a === void 0 ? void 0 : _a.models.map(function (model) { return (React.createElement("option", { key: model, value: model }, model)); }))),
+                config.llm.provider === 'ollama' && ollamaModels.length > 0 && (React.createElement("small", { className: "form-help" },
+                    "Found ",
+                    ollamaModels.length,
+                    " models in your Ollama instance"))),
             (config.llm.provider === 'azure' || config.llm.provider === 'ollama') && (React.createElement("div", { className: "form-group" },
                 React.createElement("label", null, "Endpoint"),
-                React.createElement("input", { type: "text", value: config.llm.endpoint || '', onChange: function (e) { return updateConfig('llm.endpoint', e.target.value); }, placeholder: config.llm.provider === 'azure' ? 'https://your-resource.openai.azure.com' : 'http://localhost:11434', className: "form-input" }),
+                React.createElement("input", { type: "text", value: config.llm.endpoint || '', onChange: function (e) {
+                        updateConfig('llm.endpoint', e.target.value);
+                        // If Ollama endpoint changes, refetch models
+                        if (config.llm.provider === 'ollama') {
+                            fetchOllamaModels();
+                        }
+                    }, placeholder: config.llm.provider === 'azure' ? 'https://your-resource.openai.azure.com' : 'http://localhost:11434', className: "form-input" }),
                 React.createElement("small", { className: "form-help" }, config.llm.provider === 'azure'
                     ? 'Your Azure OpenAI endpoint URL'
-                    : 'Local Ollama server URL'))),
+                    : 'Local Ollama server URL (default: http://localhost:11434)'))),
             React.createElement("div", { className: "form-row" },
                 React.createElement("div", { className: "form-group" },
                     React.createElement("label", null, "Temperature"),
