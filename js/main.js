@@ -96,7 +96,6 @@
     let currentConfig = {
         llm_provider: 'scaleway',
         llm_model: 'llama-3.3-70b-instruct',
-        scw_secret_key: '',
         local_llm_endpoint: 'http://localhost:11434/api/generate',
         azure_endpoint: '',
         timeout: 5000,
@@ -395,7 +394,6 @@
         // LLM Configuration
         setFieldValue('llm-provider', currentConfig.llm_provider);
         setFieldValue('llm-model', currentConfig.llm_model);
-        setFieldValue('scw-api-key', currentConfig.scw_secret_key);
         setFieldValue('local-endpoint', currentConfig.local_llm_endpoint);
         setFieldValue('azure-endpoint', currentConfig.azure_endpoint);
         
@@ -577,11 +575,6 @@
     function validateConfiguration(config) {
         const errors = [];
         
-        // Validate required fields based on provider
-        if (config.llm_provider === 'scaleway' && !config.scw_secret_key && !config.debug_mode && !config.force_rule_based) {
-            errors.push('Scaleway API key is required unless debug mode or force rule-based is enabled');
-        }
-        
         // Validate numeric ranges
         if (config.timeout < 60 || config.timeout > 10000) {
             errors.push('Timeout must be between 60 and 10000 seconds');
@@ -602,10 +595,6 @@
         // Validate logical combinations
         if (config.force_rule_based && config.enable_async_processing) {
             console.warn('⚠️ Async processing is less beneficial with force rule-based mode');
-        }
-        
-        if (config.debug_mode && !config.force_rule_based && config.llm_provider === 'scaleway' && !config.scw_secret_key) {
-            errors.push('Debug mode requires either an API key or force rule-based mode');
         }
         
         return errors;
