@@ -25,19 +25,19 @@ from datetime import datetime
 from api.config_routes import config_bp
 
 def load_saved_config(runtime_config, output_folder):
-    """Load saved configuration if it exists."""
+    """Load saved configuration if it exists (excluding API keys)."""
     config_file = os.path.join(output_folder, 'runtime_config.json')
     if os.path.exists(config_file):
         try:
             with open(config_file, 'r') as f:
                 saved_config = json.load(f)
-            # Update runtime config with saved values
-            runtime_config.update(saved_config)
-            # Update environment variables if API key is saved
-            if saved_config.get('scw_secret_key'):
-                os.environ['SCW_SECRET_KEY'] = saved_config['scw_secret_key']
-                os.environ['SCW_API_KEY'] = saved_config['scw_secret_key']
-            logger.info("Loaded saved configuration")
+            
+            # Update runtime config with saved values, but NEVER load API keys
+            for key, value in saved_config.items():
+                if not key.endswith('_key') and not key.endswith('_secret'):
+                    runtime_config[key] = value
+            
+            logger.info("Loaded saved configuration (API keys excluded)")
         except Exception as e:
             logger.error(f"Failed to load saved config: {e}")
 
@@ -52,8 +52,8 @@ def create_app():
     
     Config.ensure_directories(UPLOAD_FOLDER, OUTPUT_FOLDER, INPUT_FOLDER)
     app = Flask(__name__, static_folder='.')
-
-# Add CSP headers to allow eval for development
+    
+    # Add CSP headers to allow eval for development
     @app.after_request
     def add_security_headers(response):
         # For development only - allows Babel to work
@@ -81,10 +81,11 @@ def create_app():
     # ENHANCED LOGGING: Show environment status at startup
     api_key = os.getenv('SCW_API_KEY') or os.getenv('SCW_SECRET_KEY')
     if api_key:
-        logger.info(f"✅ API Key loaded successfully: ***{api_key[-4:]}")
+        logger.info(f"✅ API Key loaded from .env file: ***{api_key[-4:]}")
     else:
         logger.warning("⚠️ No API key found! The LLM calls will fail.")
         logger.warning("Please create a .env file with: SCW_SECRET_KEY=your_key_here")
+        logger.warning("API keys must be managed through .env file only for security.")
     
     test_file = os.path.join(OUTPUT_FOLDER, 'test_permissions.txt')
     try:
@@ -107,21 +108,25 @@ def create_app():
     logger.info(f"Output folder: {OUTPUT_FOLDER}")
     logger.info(f"Input folder: {INPUT_FOLDER}")
     logger.info("Backend ready with review system!")
-
-    @app.errorhandler(Exception)
-    def handle_exception(e):
-        logger.error(f"Unhandled exception: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({
-            'error': 'Internal server error',
-            'message': str(e),
-            'timestamp': datetime.now().isoformat()
-        }), 500
-
+    
     return app, socketio
 
 if __name__ == '__main__':
     app, socketio = create_app()
-    socketio.run(app, debug=True, port=5000, host='0.0.0.0')
-else:
-    application, _ = create_app()  # Export 'application' for Gunicorn
+    port = int(os.getenv('PORT', 5000))
+    
+    # Configure host based on environment
+    host = os.getenv('HOST', '127.0.0.1')
+    
+    print(f"\n{'='*60}")
+    print(f"🚀 Threat Modeling Pipeline with Review System")
+    print(f"{'='*60}")
+    print(f"🌐 Server: http://{host}:{port}")
+    print(f"📂 Upload folder: ./uploads")
+    print(f"💾 Output folder: {os.getenv('OUTPUT_DIR', './output')}")
+    print(f"📄 Input folder: {os.getenv('INPUT_DIR', './input_documents')}")
+    print(f"🔌 WebSocket: enabled")
+    print(f"🔍 Review System: enabled")
+    print(f"{'='*60}\n")
+    
+    socketio.run(app, host=host, port=port, debug=True)

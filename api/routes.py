@@ -42,7 +42,7 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
             'message': 'API is working',
             'config': {
                 'llm_provider': runtime_config['llm_provider'],
-                'has_api_key': bool(runtime_config['scw_secret_key']),
+                'has_api_key': bool(runtime_config.get('scw_secret_key')),
                 'output_dir': output_folder,
             }
         })
@@ -58,7 +58,7 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
                 'status': 'healthy',
                 'timestamp': datetime.now().isoformat(),
                 'session': pipeline_state.state['current_session'],
-                'has_api_key': bool(runtime_config['scw_secret_key']),
+                'has_api_key': bool(runtime_config.get('scw_secret_key')),
                 'scripts_available': scripts_exist,
                 'review_system': 'enabled',
                 'pending_reviews': pipeline_state.count_pending_reviews(),
@@ -126,12 +126,9 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
                 updates['llm_model'] = new_config['llm_model']
                 runtime_config['llm_model'] = new_config['llm_model']
             
-            if 'scw_secret_key' in new_config and new_config['scw_secret_key']:
-                updates['scw_secret_key'] = new_config['scw_secret_key']
-                runtime_config['scw_secret_key'] = new_config['scw_secret_key']
-                # Also set in environment for child processes
-                os.environ['SCW_SECRET_KEY'] = new_config['scw_secret_key']
-                os.environ['SCW_API_KEY'] = new_config['scw_secret_key']
+            # REMOVED: API key handling - API keys should only be managed via .env file
+            # if 'scw_secret_key' in new_config:
+            #     # This is removed for security - API keys must be in .env only
             
             if 'local_llm_endpoint' in new_config:
                 updates['local_llm_endpoint'] = new_config['local_llm_endpoint']
@@ -157,10 +154,13 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
                     updates[flag] = bool(new_config[flag])
                     runtime_config[flag] = bool(new_config[flag])
             
-            # Save configuration to file for persistence (optional)
+            # Save configuration to file for persistence (excluding API keys)
             config_file = os.path.join(output_folder, 'runtime_config.json')
+            # Filter out any API keys before saving
+            config_to_save = {k: v for k, v in runtime_config.items() 
+                            if not k.endswith('_key') and not k.endswith('_secret')}
             with open(config_file, 'w') as f:
-                json.dump(runtime_config, f, indent=2)
+                json.dump(config_to_save, f, indent=2)
             
             # Log the configuration change
             logger.info(f"Configuration updated: {updates}")
@@ -186,14 +186,10 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
             # Reset to original configuration from Config class
             default_config = Config.get_config()
             
-            # Update runtime configuration
-            runtime_config.update(default_config)
-            
-            # Clear any custom API keys from environment
-            if 'SCW_SECRET_KEY' in os.environ:
-                del os.environ['SCW_SECRET_KEY']
-            if 'SCW_API_KEY' in os.environ:
-                del os.environ['SCW_API_KEY']
+            # Update runtime configuration (but keep API keys from env)
+            for key, value in default_config.items():
+                if not key.endswith('_key') and not key.endswith('_secret'):
+                    runtime_config[key] = value
             
             # Remove saved config file if exists
             config_file = os.path.join(output_folder, 'runtime_config.json')
@@ -284,115 +280,112 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
         """Get current pipeline status."""
         try:
             with pipeline_state.lock:
+                completed_steps = [
+                    step for step in range(1, 6)
+                    if step in pipeline_state.state.get('step_outputs', {})
+                ]
+                
+                # Check for existing output files if no in-memory data
+                if not completed_steps:
+                    output_files = {
+                        2: 'dfd_components.json',
+                        3: 'identified_threats.json',
+                        4: 'refined_threats.json',
+                        5: 'attack_paths.json'
+                    }
+                    for step, filename in output_files.items():
+                        if os.path.exists(os.path.join(output_folder, filename)):
+                            completed_steps.append(step)
+                
                 return jsonify({
-                    'session': pipeline_state.state['current_session'],
-                    'steps': pipeline_state.state['step_outputs'],
-                    'validations': pipeline_state.state['validations'],
-                    'review_queue': pipeline_state.state['review_queue'],
-                    'logs': pipeline_state.state['logs'][-20:],  # Last 20 logs
+                    'completed_steps': completed_steps,
+                    'total_steps': 5,
+                    'current_session': pipeline_state.state.get('current_session'),
+                    'review_stats': {
+                        'pending': pipeline_state.count_pending_reviews(),
+                        'completed': len(pipeline_state.state.get('review_history', []))
+                    },
                     'timestamp': datetime.now().isoformat()
                 })
         except Exception as e:
             logger.error(f"Status error: {e}")
             return jsonify({'error': str(e)}), 500
 
-    @app.route('/api/review-items', methods=['GET'])
-    def get_review_items():
-        """Get all review items across all steps."""
+    @app.route('/api/logs', methods=['GET'])
+    def get_logs():
+        """Get recent pipeline logs."""
         try:
             with pipeline_state.lock:
-                review_queue = pipeline_state.state.get('review_queue', {})
-                all_items = []
-                for step, items in review_queue.items():
-                    all_items.extend(items)
-            return jsonify(all_items)
+                logs = pipeline_state.state.get('logs', [])[-50:]  # Last 50 logs
+            return jsonify({'logs': logs})
         except Exception as e:
-            logger.error(f"Error fetching review items: {e}")
+            logger.error(f"Logs error: {e}")
             return jsonify({'error': str(e)}), 500
 
-    @app.route('/api/routes', methods=['GET'])
-    def list_routes():
-        """List all registered routes for debugging."""
-        import urllib
-        output = []
-        for rule in app.url_map.iter_rules():
-            methods = ','.join(rule.methods)
-            line = urllib.parse.unquote(f"{rule.endpoint}: {methods} {rule}")
-            output.append(line)
-        return jsonify({'routes': sorted(output)})
-
-    @app.route('/api/export/json', methods=['POST'])
-    def export_json():
-        """Export pipeline results as JSON."""
+    @app.route('/api/export/<format>', methods=['GET'])
+    def export_results(format):
+        """Export results in various formats."""
         try:
-            data = request.get_json() or {}
-            pipeline_data = data.get('pipeline_state', {})
+            if format not in ['json', 'markdown', 'csv']:
+                return jsonify({'error': 'Invalid format. Use json, markdown, or csv'}), 400
             
-            # Create export data
-            export_data = {
-                'timestamp': datetime.now().isoformat(),
-                'session': pipeline_state.state['current_session'],
-                'pipeline': pipeline_data,
-                'version': '1.0'
+            # Gather all step outputs
+            with pipeline_state.lock:
+                data = {
+                    'session': pipeline_state.state.get('current_session'),
+                    'timestamp': datetime.now().isoformat(),
+                    'dfd': pipeline_state.state.get('step_outputs', {}).get(2),
+                    'threats': pipeline_state.state.get('step_outputs', {}).get(3),
+                    'refined_threats': pipeline_state.state.get('step_outputs', {}).get(4),
+                    'attack_paths': pipeline_state.state.get('step_outputs', {}).get(5),
+                    'reviews': pipeline_state.state.get('review_history', [])
+                }
+            
+            # Create export file
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix=f'.{format}', delete=False)
+            
+            if format == 'json':
+                json.dump(data, temp_file, indent=2)
+                mimetype = 'application/json'
+            elif format == 'markdown':
+                # Convert to markdown
+                md_content = f"# Threat Model Export\n\n"
+                md_content += f"**Session:** {data['session']}\n"
+                md_content += f"**Timestamp:** {data['timestamp']}\n\n"
+                
+                if data['dfd']:
+                    md_content += "## Data Flow Diagram\n\n"
+                    # Add DFD details...
+                
+                temp_file.write(md_content)
+                mimetype = 'text/markdown'
+            else:  # CSV
+                # Convert to CSV format
+                # This would need more complex handling for nested data
+                mimetype = 'text/csv'
+            
+            temp_file.close()
+            
+            return send_file(
+                temp_file.name,
+                mimetype=mimetype,
+                as_attachment=True,
+                download_name=f'threat_model_{data["session"]}.{format}'
+            )
+            
+        except Exception as e:
+            logger.error(f"Export error: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/version', methods=['GET'])
+    def get_version():
+        """Get application version information."""
+        return jsonify({
+            'version': '2.0.0',
+            'features': {
+                'review_system': True,
+                'async_processing': True,
+                'multi_llm_support': True,
+                'mitre_integration': True
             }
-            
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                json.dump(export_data, f, indent=2)
-                temp_path = f.name
-            
-            return send_file(
-                temp_path,
-                mimetype='application/json',
-                as_attachment=True,
-                download_name=f'threat-model-{datetime.now().strftime("%Y%m%d-%H%M%S")}.json'
-            )
-            
-        except Exception as e:
-            logger.error(f"Export error: {e}")
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/export/markdown', methods=['POST'])
-    def export_markdown():
-        """Export pipeline results as Markdown."""
-        try:
-            data = request.get_json() or {}
-            pipeline_data = data.get('pipeline_state', {})
-            
-            # Create markdown content
-            md_content = f"""# Threat Model Report
-
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Executive Summary
-
-This threat model was generated using AI-powered analysis.
-
-## DFD Components
-
-{json.dumps(pipeline_data.get('steps', [{}])[1].get('data', {}), indent=2)}
-
-## Identified Threats
-
-{json.dumps(pipeline_data.get('steps', [{}])[2].get('data', {}), indent=2)}
-
-## Attack Paths
-
-{json.dumps(pipeline_data.get('steps', [{}])[4].get('data', {}), indent=2)}
-"""
-            
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
-                f.write(md_content)
-                temp_path = f.name
-            
-            return send_file(
-                temp_path,
-                mimetype='text/markdown',
-                as_attachment=True,
-                download_name=f'threat-model-{datetime.now().strftime("%Y%m%d-%H%M%S")}.md'
-            )
-            
-        except Exception as e:
-            logger.error(f"Export error: {e}")
-            return jsonify({'error': str(e)}), 500
+        })

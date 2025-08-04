@@ -1,6 +1,6 @@
 """
-Fixed pipeline_service.py - Ensures proper handling of step transitions
-and progress tracking for step 3 after DFD extraction.
+Pipeline Service with fixed environment variable handling
+Handles None values properly to prevent TypeError in subprocess
 """
 
 import json
@@ -45,7 +45,7 @@ class PipelineService:
         
         # Return proper default status
         return {
-            'status': 'pending',  # Changed from 'unknown' to 'pending'
+            'status': 'pending',
             'progress': 0,
             'message': 'Ready to start'
         }
@@ -60,27 +60,93 @@ class PipelineService:
             5: 'attack_paths.json'
         }
         
-        if step not in output_files:
+        output_file = output_files.get(step)
+        if not output_file:
             return False
             
-        output_file = os.path.join(output_folder, output_files[step])
-        if not os.path.exists(output_file):
+        file_path = os.path.join(output_folder, output_file)
+        if not os.path.exists(file_path):
             return False
             
         try:
-            with open(output_file, 'r') as f:
+            with open(file_path, 'r') as f:
                 data = json.load(f)
-                # Basic validation that the file has content
-                return bool(data)
-        except Exception as e:
-            logger.error(f"Invalid output file for step {step}: {e}")
+            return bool(data)
+        except Exception:
             return False
 
     @staticmethod
-    def execute_step(step: int, input_data: dict, runtime_config: dict, pipeline_state: PipelineState, 
-                    socketio, output_folder: str, input_folder: str) -> dict:
-        """Execute a specific pipeline step with improved error handling."""
+    def save_step_data(step: int, data: Any, pipeline_state: PipelineState, output_folder: str) -> dict:
+        """Save step data to file and update pipeline state."""
+        output_files = {
+            2: 'dfd_components.json',
+            3: 'identified_threats.json',
+            4: 'refined_threats.json',
+            5: 'attack_paths.json'
+        }
         
+        output_file = output_files.get(step)
+        if not output_file:
+            raise ValueError(f"Invalid step number: {step}")
+        
+        file_path = os.path.join(output_folder, output_file)
+        save_step_data(data, file_path)
+        
+        # Update pipeline state
+        with pipeline_state.lock:
+            pipeline_state.state['step_outputs'][step] = data
+        
+        # Also write progress file to mark as completed
+        progress_file = os.path.join(output_folder, f'step_{step}_progress.json')
+        with open(progress_file, 'w') as f:
+            json.dump({
+                'status': 'completed',
+                'progress': 100,
+                'message': f'Step {step} completed successfully'
+            }, f)
+        
+        return {
+            'status': 'success',
+            'message': f'Step {step} data saved successfully',
+            'file': output_file
+        }
+
+    @staticmethod
+    def load_existing_files(pipeline_state: PipelineState, output_folder: str) -> dict:
+        """Load existing output files into pipeline state."""
+        loaded = []
+        output_files = {
+            2: 'dfd_components.json',
+            3: 'identified_threats.json',
+            4: 'refined_threats.json',
+            5: 'attack_paths.json'
+        }
+        
+        for step, filename in output_files.items():
+            file_path = os.path.join(output_folder, filename)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        data = json.load(f)
+                    with pipeline_state.lock:
+                        pipeline_state.state['step_outputs'][step] = data
+                    loaded.append(f"Step {step}: {filename}")
+                    logger.info(f"Loaded existing file for step {step}: {filename}")
+                except Exception as e:
+                    logger.error(f"Failed to load {filename}: {e}")
+        
+        return {
+            'status': 'success',
+            'loaded': loaded,
+            'message': f'Loaded {len(loaded)} existing files'
+        }
+
+    @staticmethod
+    def execute_step(step: int, input_data: dict, runtime_config: dict, 
+                    pipeline_state: PipelineState, socketio, output_folder: str, 
+                    input_folder: str) -> dict:
+        """Execute a specific pipeline step."""
+        # Validate step number
         if not isinstance(step, int) or step < 1 or step > 5:
             raise ValueError('Invalid step number. Must be 1-5.')
         
@@ -133,19 +199,19 @@ class PipelineService:
         # Prepare environment
         env = os.environ.copy()
         
-        # Base environment updates
+        # Base environment updates - FIX: Convert None values to empty strings
         env_updates = {
-            'INPUT_DIR': input_folder,
-            'OUTPUT_DIR': output_folder,
+            'INPUT_DIR': input_folder or '',
+            'OUTPUT_DIR': output_folder or '',
             'LOG_LEVEL': 'INFO',
-            'PIPELINE_TIMEOUT': str(runtime_config['timeout']),
-            'LLM_PROVIDER': runtime_config['llm_provider'],
-            'LLM_MODEL': runtime_config['llm_model'],
-            'LOCAL_LLM_ENDPOINT': runtime_config['local_llm_endpoint'],
-            'CUSTOM_SYSTEM_PROMPT': runtime_config['custom_system_prompt'],
-            'MITRE_ENABLED': str(runtime_config['mitre_enabled']).lower(),
-            'MITRE_VERSION': runtime_config['mitre_version'],
-            'SCW_API_URL': runtime_config['scw_api_url'],
+            'PIPELINE_TIMEOUT': str(runtime_config.get('timeout', 300)),
+            'LLM_PROVIDER': runtime_config.get('llm_provider', ''),
+            'LLM_MODEL': runtime_config.get('llm_model', ''),
+            'LOCAL_LLM_ENDPOINT': runtime_config.get('local_llm_endpoint', ''),
+            'CUSTOM_SYSTEM_PROMPT': runtime_config.get('custom_system_prompt', ''),
+            'MITRE_ENABLED': str(runtime_config.get('mitre_enabled', True)).lower(),
+            'MITRE_VERSION': runtime_config.get('mitre_version', 'v13.1'),
+            'SCW_API_URL': runtime_config.get('scw_api_url', ''),
             'TEMPERATURE': str(runtime_config.get('temperature', 0.2)),
             'MAX_TOKENS': str(runtime_config.get('max_tokens', 4096)),
         }
@@ -154,15 +220,33 @@ class PipelineService:
         if session_id:
             env_updates['SESSION_ID'] = session_id
         
-        # Handle API keys securely
+        # Handle API keys securely - FIX: Only add if value is not None
         for key in ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY', 
                    'GOOGLE_API_KEY', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT',
                    'BEDROCK_ACCESS_KEY', 'BEDROCK_SECRET_KEY', 'BEDROCK_REGION']:
             value = runtime_config.get(key.lower()) or os.getenv(key)
-            if value:
+            if value:  # Only add if value is not None or empty
                 env_updates[key] = value
         
-        env.update(env_updates)
+        # Handle SCW API key - check all possible sources
+        scw_key = (
+            runtime_config.get('scw_secret_key') or 
+            runtime_config.get('scw_api_key') or
+            os.getenv('SCW_SECRET_KEY') or 
+            os.getenv('SCW_API_KEY')
+        )
+        if scw_key:
+            # Set both environment variables to ensure compatibility
+            env_updates['SCW_SECRET_KEY'] = scw_key
+            env_updates['SCW_API_KEY'] = scw_key
+            logger.info(f"✅ API key found and set: ***{scw_key[-4:]}")
+        
+        # FIX: Filter out None values before updating env
+        for key, value in env_updates.items():
+            if value is not None:
+                env[key] = str(value)  # Ensure all values are strings
+            else:
+                logger.debug(f"Skipping env var {key} with None value")
         
         # Determine script and output file
         script_name = None
@@ -221,27 +305,37 @@ class PipelineService:
         # Execute the script
         try:
             logger.info(f"Executing: {sys.executable} {script_name}")
-            logger.debug(f"Environment: {env_updates}")
+            logger.debug(f"Environment updates: {env_updates}")
+            
+            # Log critical environment variables for debugging
+            logger.info(f"Environment - SCW_API_KEY: {'***' + env.get('SCW_API_KEY', 'NOT SET')[-4:] if env.get('SCW_API_KEY') else 'NOT SET'}")
+            logger.info(f"Environment - SCW_SECRET_KEY: {'***' + env.get('SCW_SECRET_KEY', 'NOT SET')[-4:] if env.get('SCW_SECRET_KEY') else 'NOT SET'}")
+            logger.info(f"Environment - LLM_PROVIDER: {env.get('LLM_PROVIDER', 'NOT SET')}")
+            logger.info(f"Environment - INPUT_DIR: {env.get('INPUT_DIR', 'NOT SET')}")
+            logger.info(f"Environment - OUTPUT_DIR: {env.get('OUTPUT_DIR', 'NOT SET')}")
             
             result = subprocess.run(
                 [sys.executable, script_name],
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=runtime_config['timeout']
+                timeout=runtime_config.get('timeout', 300)
             )
             
             # Log output for debugging
             if result.stdout:
                 logger.info(f"Step {step} stdout: {result.stdout[:500]}")
             if result.stderr:
-                logger.warning(f"Step {step} stderr: {result.stderr[:500]}")
+                logger.warning(f"Step {step} stderr: {result.stderr}")  # Log full stderr
             
             # Check for successful execution
             if result.returncode != 0:
                 error_msg = f"Script {script_name} failed with return code {result.returncode}"
                 if result.stderr:
                     error_msg += f": {result.stderr}"
+                if result.stdout:
+                    # Also include stdout in error for debugging
+                    error_msg += f"\nStdout: {result.stdout}"
                 raise RuntimeError(error_msg)
             
             # Load and validate output
@@ -269,61 +363,46 @@ class PipelineService:
                     json.dump({
                         'status': 'completed',
                         'progress': 100,
-                        'message': f'Step {step} completed',
+                        'message': f'Step {step} completed successfully',
                         'timestamp': datetime.now().isoformat()
                     }, f)
                 
-                return output_data
+                return {
+                    'status': 'success',
+                    'step': step,
+                    'message': f'Step {step} completed successfully',
+                    'output_file': os.path.basename(output_file),
+                    'data_preview': str(output_data)[:200] + '...' if len(str(output_data)) > 200 else str(output_data)
+                }
             else:
-                error_msg = f"Output file not generated: {output_file}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
+                raise RuntimeError(f"Output file {output_file} not found after script execution")
                 
         except subprocess.TimeoutExpired:
-            error_msg = f"Script {script_name} timed out after {runtime_config['timeout']} seconds"
-            logger.error(error_msg)
-            if session_id:
-                PipelineService.update_progress(session_id, step, {
-                    'status': 'failed',
-                    'progress': 0,
-                    'message': error_msg
-                }, pipeline_state, socketio)
-            raise
-        except Exception as e:
-            error_msg = f"Script {script_name} execution failed: {str(e)}"
-            logger.error(error_msg)
-            if session_id:
-                PipelineService.update_progress(session_id, step, {
-                    'status': 'failed',
-                    'progress': 0,
-                    'message': error_msg
-                }, pipeline_state, socketio)
-            raise
-
-    @staticmethod
-    def save_step_data(step: int, step_data: dict, pipeline_state: PipelineState, output_folder: str) -> dict:
-        """Save step data to both memory and disk."""
-        try:
-            # Save to pipeline state
-            with pipeline_state.lock:
-                pipeline_state.state['step_outputs'][step] = step_data
-            
-            # Save to disk
-            filename = f'step_{step}_data.json'
-            output_path = os.path.join(output_folder, filename)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(step_data, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Saved step {step} data to {output_path}")
-            pipeline_state.add_log(f"Step {step} data saved", 'success')
-            
-            return {'status': 'success', 'message': f'Step {step} data saved successfully'}
-            
-        except Exception as e:
-            error_msg = f"Failed to save step {step} data: {str(e)}"
+            error_msg = f"Step {step} timed out after {runtime_config.get('timeout', 300)} seconds"
             logger.error(error_msg)
             pipeline_state.add_log(error_msg, 'error')
-            return {'status': 'error', 'message': error_msg}
+            
+            if session_id:
+                PipelineService.update_progress(session_id, step, {
+                    'status': 'error',
+                    'progress': 0,
+                    'message': error_msg
+                }, pipeline_state, socketio)
+            
+            raise
+        
+        except Exception as e:
+            logger.error(f"Step {step} execution error: {str(e)}")
+            pipeline_state.add_log(f"Step {step} error: {str(e)}", 'error')
+            
+            if session_id:
+                PipelineService.update_progress(session_id, step, {
+                    'status': 'error',
+                    'progress': 0,
+                    'message': str(e)
+                }, pipeline_state, socketio)
+            
+            raise
 
 def cleanup_progress_file(step: int, output_folder: str) -> None:
     """Clean up any existing progress file for a step."""
