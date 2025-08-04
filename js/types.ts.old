@@ -1,6 +1,6 @@
-// js/settings/types.ts
+// js/types.ts
 
-export interface LLMProvider {
+interface LLMProvider {
   id: string;
   name: string;
   requiresApiKey: boolean;
@@ -10,17 +10,7 @@ export interface LLMProvider {
   configurable?: boolean;
 }
 
-export interface LLMProvider {
-  id: string;
-  name: string;
-  requiresApiKey: boolean;
-  models: string[];
-  defaultModel: string;
-  endpoint?: string;
-  configurable?: boolean;
-}
-
-export interface LLMConfiguration {
+interface LLMConfiguration {
   provider: string;
   model: string;
   apiKey?: string;
@@ -29,20 +19,20 @@ export interface LLMConfiguration {
   maxTokens: number;
 }
 
-export interface ProcessingConfiguration {
+interface ProcessingConfiguration {
   timeout: number;
   enableAsyncProcessing: boolean;
   maxConcurrentCalls: number;
   detailedLlmLogging: boolean;
 }
 
-export interface DebugConfiguration {
+interface DebugConfiguration {
   debugMode: boolean;
   forceRuleBased: boolean;
   verboseErrorReporting: boolean;
 }
 
-export interface FeatureFlags {
+interface FeatureFlags {
   enableQualityCheck: boolean;
   enableMultiPass: boolean;
   enableMermaid: boolean;
@@ -51,22 +41,28 @@ export interface FeatureFlags {
   mitreVersion: string;
 }
 
-export interface StepSpecificSettings {
+interface StepSpecificSettings {
   step1?: {
     minTextLength: number;
     maxTextLength: number;
     chunkSize: number;
+    enableSpellCheck?: boolean;
+    enableGrammarCheck?: boolean;
   };
   step2?: {
     maxComponents: number;
+    enableDiagramValidation?: boolean;
   };
   step3?: {
     minRiskScore: number;
     maxComponentsToAnalyze: number;
     similarityThreshold: number;
+    confidenceThreshold?: number;
   };
   step4?: {
     confidenceThreshold: number;
+    enableCveEnrichment?: boolean;
+    cvssThreshold?: number;
   };
   step5?: {
     maxAttackPaths: number;
@@ -74,7 +70,7 @@ export interface StepSpecificSettings {
   };
 }
 
-export interface ThreatModelingConfiguration {
+interface ThreatModelingConfiguration {
   llm: LLMConfiguration;
   processing: ProcessingConfiguration;
   debug: DebugConfiguration;
@@ -86,16 +82,27 @@ export interface ThreatModelingConfiguration {
   stepSpecific?: StepSpecificSettings;
 }
 
-export interface SettingsModalProps {
+interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (config: ThreatModelingConfiguration) => Promise<void>;
   currentConfig: ThreatModelingConfiguration;
 }
 
-export interface ValidationError {
+interface ValidationError {
   field: string;
   message: string;
 }
 
-export type SettingsSection = 'llm' | 'processing' | 'debug' | 'features' | 'directories';
+type SettingsSection = 'llm' | 'processing' | 'debug' | 'features' | 'directories';
+
+// Since we're not using ES modules, we'll declare these types globally
+declare global {
+  interface Window {
+    ThreatModelingConfiguration: ThreatModelingConfiguration;
+    LLMProvider: LLMProvider;
+    ValidationError: ValidationError;
+  }
+}
+
+// No exports since we're not using modules

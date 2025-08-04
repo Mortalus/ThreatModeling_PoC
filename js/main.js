@@ -611,91 +611,92 @@
         return errors;
     }
 
-    async function saveSettings() {
-        if (settingsEnhanced && window.saveEnhancedSettings) {
-            // Enhanced settings handle saving internally
-            return window.saveEnhancedSettings();
+    // Replace the saveSettings function in main.js with this version
+
+// Replace the saveSettings function in main.js with this version
+
+function saveSettings() {
+    try {
+        const newConfig = {
+            // LLM Configuration
+            llm_provider: getFieldValue('llm-provider'),
+            llm_model: getFieldValue('llm-model'),
+            local_llm_endpoint: getFieldValue('local-llm-endpoint'),
+            temperature: parseFloat(getFieldValue('temperature')),
+            max_tokens: parseInt(getFieldValue('max-tokens')),
+            
+            // Processing Options
+            timeout: parseInt(getFieldValue('timeout')),
+            enable_async_processing: getFieldValue('enable-async'),
+            max_concurrent_calls: parseInt(getFieldValue('max-concurrent-calls')),
+            detailed_llm_logging: getFieldValue('detailed-logging'),
+            
+            // Debug Options
+            debug_mode: getFieldValue('debug-mode'),
+            force_rule_based: getFieldValue('force-rule-based'),
+            verbose_error_reporting: getFieldValue('verbose-error-reporting'),
+            
+            // Feature Flags
+            enable_quality_check: getFieldValue('enable-quality-check'),
+            enable_multi_pass: getFieldValue('enable-multi-pass'),
+            enable_mermaid: getFieldValue('enable-mermaid'),
+            enable_llm_enrichment: getFieldValue('enable-llm-enrichment'),
+            mitre_enabled: getFieldValue('mitre-enabled')
+        };
+        
+        // Validate configuration
+        const validationErrors = validateConfiguration(newConfig);
+        if (validationErrors.length > 0) {
+            alert('Configuration errors:\n' + validationErrors.join('\n'));
+            return;
         }
         
-        try {
-            const newConfig = {
-                // LLM Configuration
-                llm_provider: getFieldValue('llm-provider'),
-                llm_model: getFieldValue('llm-model'),
-                scw_secret_key: getFieldValue('scw-api-key'),
-                local_llm_endpoint: getFieldValue('local-endpoint'),
-                azure_endpoint: getFieldValue('azure-endpoint'),
-                
-                // Processing Parameters
-                timeout: parseInt(getFieldValue('timeout')),
-                temperature: parseFloat(getFieldValue('temperature')),
-                max_tokens: parseInt(getFieldValue('max-tokens')),
-                
-                // Async/Performance Options
-                enable_async_processing: getFieldValue('enable-async-processing'),
-                max_concurrent_calls: parseInt(getFieldValue('max-concurrent-calls')),
-                detailed_llm_logging: getFieldValue('detailed-llm-logging'),
-                
-                // Debug Options
-                debug_mode: getFieldValue('debug-mode'),
-                force_rule_based: getFieldValue('force-rule-based'),
-                verbose_error_reporting: getFieldValue('verbose-error-reporting'),
-                
-                // Feature Flags
-                enable_quality_check: getFieldValue('enable-quality-check'),
-                enable_multi_pass: getFieldValue('enable-multi-pass'),
-                enable_mermaid: getFieldValue('enable-mermaid'),
-                enable_llm_enrichment: getFieldValue('enable-llm-enrichment'),
-                mitre_enabled: getFieldValue('mitre-enabled')
-            };
-            
-            // Validate configuration
-            const validationErrors = validateConfiguration(newConfig);
-            if (validationErrors.length > 0) {
-                alert('Configuration errors:\n' + validationErrors.join('\n'));
-                return;
+        // Update current config
+        currentConfig = { ...currentConfig, ...newConfig };
+        
+        // Save to localStorage
+        localStorage.setItem('threat_modeling_config', JSON.stringify(currentConfig));
+        
+        // Send to backend
+        const apiUrl = `${window.CoreUtilities.API_BASE}/config`;
+        console.log('About to fetch:', apiUrl);
+        console.log('Full URL should be:', apiUrl);
+        fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentConfig)
+        })
+        .then(response => {
+            // Check if response is ok before trying to parse JSON
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
             }
             
-            // Update current config
-            currentConfig = { ...currentConfig, ...newConfig };
-            
-            // Save to localStorage
-            localStorage.setItem('threat_modeling_config', JSON.stringify(currentConfig));
-            
-            // Send to backend
-            fetch('/api/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(currentConfig)
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    console.log('✅ Configuration saved successfully');
-                    showNotification('Settings saved successfully!', 'success');
-                    closeSettingsModal();
-                    
-                    // Also save to config file for persistence
-                    return fetch('/api/config/save', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(currentConfig)
-                    });
-                } else {
-                    console.error('❌ Failed to save configuration:', data.error);
-                    showNotification('Failed to save settings: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                console.error('❌ Error saving configuration:', error);
-                showNotification('Error saving settings: ' + error.message, 'error');
-            });
-            
-        } catch (error) {
-            console.error('❌ Error in saveSettings:', error);
-            showNotification('Error saving settings: ' + error.message, 'error');
-        }
+            // Check content type
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                return response.json();
+            } else {
+                throw new Error("Response is not JSON");
+            }
+        })
+        .then(data => {
+            console.log('✅ Configuration saved successfully');
+            showNotification('Settings saved successfully!', 'success');
+            closeSettingsModal();
+        })
+        .catch(error => {
+            console.error('❌ Error saving configuration:', error);
+            // Still save locally even if backend fails
+            showNotification('Settings saved locally (backend error)', 'warning');
+            closeSettingsModal();
+        });
+        
+    } catch (error) {
+        console.error('❌ Error in saveSettings:', error);
+        showNotification('Error saving settings: ' + error.message, 'error');
     }
+}
 
     function showNotification(message, type = 'info') {
         const container = document.getElementById('notification-container') || document.body;
@@ -769,14 +770,6 @@
         // Initialize configuration management
         loadSettings();
 
-        // Try to load enhanced settings module
-        loadEnhancedSettingsModule().then(success => {
-            if (success) {
-                console.log('✅ Using enhanced settings system');
-            } else {
-                console.log('ℹ️ Using legacy settings system');
-            }
-        });
 
         // Set up event listeners for configuration
         document.addEventListener('change', function(event) {

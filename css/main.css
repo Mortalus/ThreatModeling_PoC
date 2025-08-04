@@ -35,6 +35,7 @@
 /* ===== 4. UTILITIES LAYER ===== */
 /* Helper classes and utility overrides */
 @import url('utilities.css');
+@import url('settings-styles.css');
 
 /* ===== LEGACY COMPATIBILITY ===== */
 /* 

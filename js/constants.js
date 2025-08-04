@@ -1,157 +1,132 @@
-// js/settings/constants.ts
-export const LLM_PROVIDERS = {
-    scaleway: {
-        id: 'scaleway',
-        name: 'Scaleway',
-        models: [
-            'llama-3.3-70b-instruct',
-            'llama-3.1-8b-instruct',
-            'llama-3.1-70b-instruct',
-            'mistral-nemo-instruct-2407'
-        ],
-        defaultModel: 'llama-3.3-70b-instruct',
-        requiresApiKey: false, // Using .env
-        endpoint: 'https://api.scaleway.ai/v1'
-    },
-    azure: {
-        id: 'azure',
-        name: 'Azure OpenAI',
-        models: [
-            'gpt-4',
-            'gpt-4-turbo',
-            'gpt-35-turbo',
-            'gpt-4o'
-        ],
-        defaultModel: 'gpt-4',
-        requiresApiKey: false, // Using .env
-        configurable: true // Endpoint can be configured
-    },
-    ollama: {
-        id: 'ollama',
-        name: 'Ollama (Local)',
-        models: [
-            'llama3.3:latest',
-            'llama3.2:latest',
-            'llama3.1:latest',
-            'mistral:latest',
-            'mixtral:latest',
-            'codellama:latest',
-            'phi3:latest'
-        ],
-        defaultModel: 'llama3.3:latest',
-        requiresApiKey: false,
-        endpoint: 'http://localhost:11434',
-        configurable: true
-    }
-};
-export const MITRE_VERSIONS = [
-    'v13.1',
-    'v13.0',
-    'v12.1',
-    'v12.0'
-];
-export const PIPELINE_STEPS = [
-    {
-        id: 'step1',
-        name: 'Document Processing',
-        description: 'Extract and process uploaded documents',
-        settings: [
-            'minTextLength',
-            'maxTextLength',
-            'chunkSize'
-        ]
-    },
-    {
-        id: 'step2',
-        name: 'DFD Extraction',
-        description: 'Extract Data Flow Diagrams from documents',
-        settings: [
-            'enableQualityCheck',
-            'enableMultiPass',
-            'maxComponents'
-        ]
-    },
-    {
-        id: 'step3',
-        name: 'Threat Generation',
-        description: 'Generate threats from DFD components',
-        settings: [
-            'minRiskScore',
-            'maxComponentsToAnalyze',
-            'similarityThreshold'
-        ]
-    },
-    {
-        id: 'step4',
-        name: 'Threat Refinement',
-        description: 'Refine and enhance identified threats',
-        settings: [
-            'enableLlmEnrichment',
-            'mitreEnabled',
-            'mitreVersion'
-        ]
-    },
-    {
-        id: 'step5',
-        name: 'Attack Path Analysis',
-        description: 'Generate attack paths and scenarios',
-        settings: [
-            'maxAttackPaths',
-            'complexityThreshold',
-            'enableMermaid'
-        ]
-    }
-];
-export const DEFAULT_SETTINGS = {
-    llm: {
-        provider: 'scaleway',
-        model: 'llama-3.3-70b-instruct',
-        temperature: 0.2,
-        maxTokens: 4096
-    },
-    processing: {
-        timeout: 5000,
-        enableAsyncProcessing: true,
-        maxConcurrentCalls: 5,
-        detailedLlmLogging: true
-    },
-    debug: {
-        debugMode: false,
-        forceRuleBased: false,
-        verboseErrorReporting: true
-    },
-    features: {
-        enableQualityCheck: true,
-        enableMultiPass: true,
-        enableMermaid: true,
-        enableLlmEnrichment: true,
-        mitreEnabled: true,
-        mitreVersion: 'v13.1'
-    },
-    directories: {
-        input: './input_documents',
-        output: './output'
-    },
-    stepSpecific: {
-        step1: {
-            minTextLength: 100,
-            maxTextLength: 1000000,
-            chunkSize: 4000
+"use strict";
+// js/constants.ts
+// Wrap in IIFE to create globals
+(function (window) {
+    'use strict';
+    var DEFAULT_SETTINGS = {
+        llm: {
+            provider: 'scaleway',
+            model: 'llama-3.1-8b-instruct',
+            endpoint: 'http://localhost:11434',
+            temperature: 0.7,
+            maxTokens: 8192
         },
-        step2: {
-            maxComponents: 20
+        processing: {
+            timeout: 600,
+            enableAsyncProcessing: true,
+            maxConcurrentCalls: 3,
+            detailedLlmLogging: false
         },
-        step3: {
-            minRiskScore: 3,
-            maxComponentsToAnalyze: 20,
-            similarityThreshold: 0.7
+        debug: {
+            debugMode: false,
+            forceRuleBased: false,
+            verboseErrorReporting: false
         },
-        step4: {
-            confidenceThreshold: 0.8
+        features: {
+            enableQualityCheck: true,
+            enableMultiPass: false,
+            enableMermaid: true,
+            enableLlmEnrichment: true,
+            mitreEnabled: true,
+            mitreVersion: '14.1'
         },
-        step5: {
-            maxAttackPaths: 10,
-            complexityThreshold: 0.5
+        directories: {
+            input: './input_documents',
+            output: './output'
+        },
+        stepSpecific: {
+            step1: {
+                minTextLength: 100,
+                maxTextLength: 50000,
+                chunkSize: 4000,
+                enableSpellCheck: true,
+                enableGrammarCheck: false
+            },
+            step2: {
+                maxComponents: 20,
+                enableDiagramValidation: true
+            },
+            step3: {
+                minRiskScore: 0.5,
+                maxComponentsToAnalyze: 50,
+                similarityThreshold: 0.85,
+                confidenceThreshold: 0.7
+            },
+            step4: {
+                confidenceThreshold: 0.7,
+                enableCveEnrichment: true,
+                cvssThreshold: 7.0
+            },
+            step5: {
+                maxAttackPaths: 10,
+                complexityThreshold: 5
+            }
         }
-    }
-};
+    };
+    var LLM_PROVIDERS = {
+        scaleway: {
+            id: 'scaleway',
+            name: 'Scaleway',
+            requiresApiKey: true,
+            models: [
+                'llama-3.1-8b-instruct',
+                'llama-3.1-70b-instruct',
+                'mixtral-8x7b-instruct-v0.1'
+            ],
+            defaultModel: 'llama-3.1-8b-instruct'
+        },
+        ollama: {
+            id: 'ollama',
+            name: 'Ollama (Local)',
+            requiresApiKey: false,
+            models: [
+                'llama2',
+                'llama3',
+                'mistral',
+                'mixtral',
+                'codellama'
+            ],
+            defaultModel: 'llama3',
+            endpoint: 'http://localhost:11434',
+            configurable: true
+        },
+        azure: {
+            id: 'azure',
+            name: 'Azure OpenAI',
+            requiresApiKey: true,
+            models: [
+                'gpt-35-turbo',
+                'gpt-4',
+                'gpt-4-32k'
+            ],
+            defaultModel: 'gpt-35-turbo'
+        },
+        openai: {
+            id: 'openai',
+            name: 'OpenAI',
+            requiresApiKey: true,
+            models: [
+                'gpt-3.5-turbo',
+                'gpt-4',
+                'gpt-4-turbo'
+            ],
+            defaultModel: 'gpt-3.5-turbo'
+        }
+    };
+    var COMPLEXITY_THRESHOLDS = {
+        low: 3,
+        medium: 5,
+        high: 8
+    };
+    // Export to window
+    window.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
+    window.LLM_PROVIDERS = LLM_PROVIDERS;
+    window.COMPLEXITY_THRESHOLDS = COMPLEXITY_THRESHOLDS;
+    // For backward compatibility with the module pattern
+    window.SettingsConstants = {
+        DEFAULT_SETTINGS: DEFAULT_SETTINGS,
+        LLM_PROVIDERS: LLM_PROVIDERS,
+        COMPLEXITY_THRESHOLDS: COMPLEXITY_THRESHOLDS
+    };
+})(window);
+//# sourceMappingURL=constants.js.map

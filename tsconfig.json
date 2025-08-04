@@ -1,19 +1,27 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "ESNext",
+    "target": "ES5",
+    "module": "none",  // This is the key change - no module system
+    "lib": ["ES2017", "DOM"],  // Updated to ES2017 for Object.values
     "moduleResolution": "node",
     "strict": true,
     "allowJs": true,
-    "noEmit": true,
+    "noEmit": false,  // Allow TypeScript to emit files
+    "outDir": "./js",  // Output to the same directory
+    "rootDir": "./js",
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "jsx": "react"
+    "jsx": "react",
+    "removeComments": false,
+    "sourceMap": true
   },
   "include": [
+    "js/globals.d.ts",
     "js/**/*.ts",
-    "js/**/*.tsx",
+    "js/**/*.tsx"
+  ],
+  "exclude": [
     "js/**/*.js",
-    "**/*.d.ts"
+    "node_modules"
   ]
 }

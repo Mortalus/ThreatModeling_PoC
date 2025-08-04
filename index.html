@@ -181,29 +181,5 @@
 
     <div id="enhanced-settings-container"></div>
 
-    <script type="module">
-        // Load the enhanced settings module when ready
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', async () => {
-                try {
-                    const { initializeSettings } = await import('/js/integration.js');
-                    initializeSettings();
-                    window.settingsEnhanced = true;
-                    console.log('✅ Enhanced settings loaded');
-                } catch (error) {
-                    console.error('❌ Failed to load enhanced settings:', error);
-                }
-            });
-        } else {
-             try {
-                    const { initializeSettings } = await import('/js/integration.js');
-                    initializeSettings();
-                    window.settingsEnhanced = true;
-                    console.log('✅ Enhanced settings loaded');
-                } catch (error) {
-                    console.error('❌ Failed to load enhanced settings:', error);
-                }
-        }
-    </script>
 </body>
 </html>

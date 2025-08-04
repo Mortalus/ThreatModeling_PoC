@@ -334,6 +334,48 @@
         console.log('Browser Support:', browserSupport);
     };
 
+    // ===== EXPORT CORE UTILITIES TO WINDOW =====
+    
+    // Create and expose the CoreUtilities object globally
+    window.CoreUtilities = {
+        // Configuration
+        API_BASE,
+        WS_BASE,
+        APP_CONFIG,
+        PIPELINE_STEPS,
+        STATUS_CONFIG,
+        
+        // Utility functions
+        debounce,
+        throttle,
+        deepClone,
+        generateId,
+        formatFileSize,
+        formatDuration,
+        capitalize,
+        truncateText,
+        isEmpty,
+        safeJsonParse,
+        safeJsonStringify,
+        
+        // Storage utilities
+        storage,
+        sessionStorage,
+        
+        // Validation
+        validateFile,
+        
+        // Error handling
+        handleError,
+        
+        // Browser detection
+        browserSupport,
+        getBrowserInfo,
+        
+        // Initialization
+        initializeCoreUtilities
+    };
+
     // Auto-initialize the global handlers.
     // This is a side-effect that runs when the module is first imported.
     if (document.readyState === 'loading') {

@@ -1,203 +1,244 @@
-// js/settings/validation.ts
-import { LLM_PROVIDERS } from './constants.js';
-export class SettingsValidator {
-    /**
-     * Validate the entire configuration
-     */
-    static validate(config) {
-        const errors = [];
-        // Validate LLM settings
-        errors.push(...this.validateLLMSettings(config.llm));
-        // Validate processing settings
-        errors.push(...this.validateProcessingSettings(config.processing));
-        // Validate debug settings
-        errors.push(...this.validateDebugSettings(config.debug, config));
-        // Validate step-specific settings
-        errors.push(...this.validateStepSettings(config.stepSpecific));
-        return errors;
-    }
-    /**
-     * Validate LLM configuration
-     */
-    static validateLLMSettings(llm) {
-        const errors = [];
-        // Validate provider
-        if (!llm.provider || !LLM_PROVIDERS[llm.provider]) {
-            errors.push({
-                field: 'llm.provider',
-                message: 'Invalid LLM provider selected'
-            });
+"use strict";
+// js/validation.ts
+// Validation for the settings system
+(function (window) {
+    'use strict';
+    var SettingsValidator = /** @class */ (function () {
+        function SettingsValidator() {
         }
-        // Validate model
-        if (llm.provider && LLM_PROVIDERS[llm.provider]) {
-            const provider = LLM_PROVIDERS[llm.provider];
-            if (!provider.models.includes(llm.model)) {
+        /**
+         * Validate the entire configuration
+         */
+        SettingsValidator.validateConfiguration = function (config) {
+            var errors = [];
+            // Validate LLM settings
+            this.validateLLMSettings(config.llm, errors);
+            // Validate processing settings
+            this.validateProcessingSettings(config.processing, errors);
+            // Validate debug settings
+            this.validateDebugSettings(config.debug, errors);
+            // Validate feature flags
+            this.validateFeatureFlags(config.features, errors);
+            // Validate step-specific settings
+            if (config.stepSpecific) {
+                this.validateStepSpecificSettings(config.stepSpecific, errors);
+            }
+            return {
+                valid: errors.length === 0,
+                errors: errors
+            };
+        };
+        /**
+         * Validate LLM settings
+         */
+        SettingsValidator.validateLLMSettings = function (llm, errors) {
+            if (!llm) {
+                errors.push({ field: 'llm', message: 'LLM configuration is required' });
+                return;
+            }
+            // Provider validation
+            if (!llm.provider) {
+                errors.push({ field: 'llm.provider', message: 'LLM provider is required' });
+            }
+            else if (!LLM_PROVIDERS || !LLM_PROVIDERS[llm.provider]) {
+                errors.push({ field: 'llm.provider', message: "Invalid LLM provider: ".concat(llm.provider) });
+            }
+            // Model validation
+            if (!llm.model) {
+                errors.push({ field: 'llm.model', message: 'LLM model is required' });
+            }
+            else if (llm.provider && LLM_PROVIDERS && LLM_PROVIDERS[llm.provider]) {
+                var provider = LLM_PROVIDERS[llm.provider];
+                if (!provider.models.includes(llm.model)) {
+                    errors.push({
+                        field: 'llm.model',
+                        message: "Invalid model \"".concat(llm.model, "\" for provider \"").concat(llm.provider, "\"")
+                    });
+                }
+            }
+            // Temperature validation
+            if (typeof llm.temperature !== 'number' || llm.temperature < 0 || llm.temperature > 2) {
                 errors.push({
-                    field: 'llm.model',
-                    message: `Invalid model for ${provider.name}`
+                    field: 'llm.temperature',
+                    message: 'Temperature must be a number between 0 and 2'
                 });
             }
-        }
-        // Validate temperature
-        if (llm.temperature < 0 || llm.temperature > 2) {
-            errors.push({
-                field: 'llm.temperature',
-                message: 'Temperature must be between 0 and 2'
-            });
-        }
-        // Validate max tokens
-        if (llm.maxTokens < 100 || llm.maxTokens > 32000) {
-            errors.push({
-                field: 'llm.maxTokens',
-                message: 'Max tokens must be between 100 and 32000'
-            });
-        }
-        // Validate Azure endpoint if Azure is selected
-        if (llm.provider === 'azure' && llm.endpoint) {
-            if (!this.isValidUrl(llm.endpoint)) {
+            // Max tokens validation
+            if (typeof llm.maxTokens !== 'number' || llm.maxTokens < 1 || llm.maxTokens > 100000) {
+                errors.push({
+                    field: 'llm.maxTokens',
+                    message: 'Max tokens must be a number between 1 and 100000'
+                });
+            }
+            // Endpoint validation for Ollama
+            if (llm.provider === 'ollama' && !llm.endpoint) {
                 errors.push({
                     field: 'llm.endpoint',
-                    message: 'Invalid Azure endpoint URL'
+                    message: 'Endpoint is required for Ollama provider'
                 });
             }
-        }
-        // Validate Ollama endpoint if Ollama is selected
-        if (llm.provider === 'ollama' && llm.endpoint) {
-            if (!this.isValidUrl(llm.endpoint)) {
+        };
+        /**
+         * Validate processing settings
+         */
+        SettingsValidator.validateProcessingSettings = function (processing, errors) {
+            if (!processing) {
+                errors.push({ field: 'processing', message: 'Processing configuration is required' });
+                return;
+            }
+            // Timeout validation
+            if (typeof processing.timeout !== 'number' || processing.timeout < 10 || processing.timeout > 3600) {
                 errors.push({
-                    field: 'llm.endpoint',
-                    message: 'Invalid Ollama endpoint URL'
+                    field: 'processing.timeout',
+                    message: 'Timeout must be a number between 10 and 3600 seconds'
                 });
             }
-        }
-        return errors;
-    }
-    /**
-     * Validate processing settings
-     */
-    static validateProcessingSettings(processing) {
-        const errors = [];
-        // Validate timeout
-        if (processing.timeout < 1000 || processing.timeout > 300000) {
-            errors.push({
-                field: 'processing.timeout',
-                message: 'Timeout must be between 1 and 300 seconds'
+            // Max concurrent calls validation
+            if (typeof processing.maxConcurrentCalls !== 'number' ||
+                processing.maxConcurrentCalls < 1 ||
+                processing.maxConcurrentCalls > 10) {
+                errors.push({
+                    field: 'processing.maxConcurrentCalls',
+                    message: 'Max concurrent calls must be a number between 1 and 10'
+                });
+            }
+            // Boolean validations
+            if (typeof processing.enableAsyncProcessing !== 'boolean') {
+                errors.push({
+                    field: 'processing.enableAsyncProcessing',
+                    message: 'Enable async processing must be a boolean'
+                });
+            }
+            if (typeof processing.detailedLlmLogging !== 'boolean') {
+                errors.push({
+                    field: 'processing.detailedLlmLogging',
+                    message: 'Detailed LLM logging must be a boolean'
+                });
+            }
+        };
+        /**
+         * Validate debug settings
+         */
+        SettingsValidator.validateDebugSettings = function (debug, errors) {
+            if (!debug) {
+                errors.push({ field: 'debug', message: 'Debug configuration is required' });
+                return;
+            }
+            var booleanFields = ['debugMode', 'forceRuleBased', 'verboseErrorReporting'];
+            booleanFields.forEach(function (field) {
+                if (typeof debug[field] !== 'boolean') {
+                    errors.push({
+                        field: "debug.".concat(field),
+                        message: "".concat(field, " must be a boolean")
+                    });
+                }
             });
-        }
-        // Validate concurrent calls
-        if (processing.maxConcurrentCalls < 1 || processing.maxConcurrentCalls > 50) {
-            errors.push({
-                field: 'processing.maxConcurrentCalls',
-                message: 'Max concurrent calls must be between 1 and 50'
+        };
+        /**
+         * Validate feature flags
+         */
+        SettingsValidator.validateFeatureFlags = function (features, errors) {
+            if (!features) {
+                errors.push({ field: 'features', message: 'Features configuration is required' });
+                return;
+            }
+            var booleanFields = [
+                'enableQualityCheck', 'enableMultiPass', 'enableMermaid',
+                'enableLlmEnrichment', 'mitreEnabled'
+            ];
+            booleanFields.forEach(function (field) {
+                if (typeof features[field] !== 'boolean') {
+                    errors.push({
+                        field: "features.".concat(field),
+                        message: "".concat(field, " must be a boolean")
+                    });
+                }
             });
-        }
-        return errors;
-    }
-    /**
-     * Validate debug settings with context
-     */
-    static validateDebugSettings(debug, config) {
-        const errors = [];
-        // Warn about debug mode implications
-        if (debug.debugMode && !debug.forceRuleBased) {
-            // This is just a warning, not an error
-            console.warn('Debug mode enabled without force rule-based. LLM calls will still be made.');
-        }
-        // Check for conflicting settings
-        if (debug.forceRuleBased && config.processing.enableAsyncProcessing) {
-            console.warn('Async processing has limited benefits with force rule-based mode enabled.');
-        }
-        return errors;
-    }
-    /**
-     * Validate step-specific settings
-     */
-    static validateStepSettings(stepSettings) {
-        const errors = [];
-        if (!stepSettings)
-            return errors;
-        // Step 1 validation
-        if (stepSettings.step1) {
-            const { minTextLength, maxTextLength, chunkSize } = stepSettings.step1;
-            if (minTextLength && (minTextLength < 10 || minTextLength > 10000)) {
+            // Validate MITRE version
+            if (features.mitreEnabled && !features.mitreVersion) {
                 errors.push({
-                    field: 'step1.minTextLength',
-                    message: 'Min text length must be between 10 and 10,000'
+                    field: 'features.mitreVersion',
+                    message: 'MITRE version is required when MITRE is enabled'
                 });
             }
-            if (maxTextLength && (maxTextLength < 1000 || maxTextLength > 10000000)) {
-                errors.push({
-                    field: 'step1.maxTextLength',
-                    message: 'Max text length must be between 1,000 and 10,000,000'
-                });
+        };
+        /**
+         * Validate step-specific settings
+         */
+        SettingsValidator.validateStepSpecificSettings = function (stepSpecific, errors) {
+            var _a, _b;
+            // Validate step 1
+            if (stepSpecific.step1) {
+                var step1 = stepSpecific.step1;
+                if (step1.minTextLength && step1.maxTextLength) {
+                    if (step1.minTextLength >= step1.maxTextLength) {
+                        errors.push({
+                            field: 'stepSpecific.step1',
+                            message: 'Min text length must be less than max text length'
+                        });
+                    }
+                }
             }
-            if (minTextLength && maxTextLength && minTextLength >= maxTextLength) {
-                errors.push({
-                    field: 'step1.textLength',
-                    message: 'Min text length must be less than max text length'
-                });
+            // Validate step 2
+            if ((_a = stepSpecific.step2) === null || _a === void 0 ? void 0 : _a.maxComponents) {
+                if (typeof stepSpecific.step2.maxComponents !== 'number' ||
+                    stepSpecific.step2.maxComponents < 1 ||
+                    stepSpecific.step2.maxComponents > 100) {
+                    errors.push({
+                        field: 'stepSpecific.step2.maxComponents',
+                        message: 'Max components must be a number between 1 and 100'
+                    });
+                }
             }
-            if (chunkSize && (chunkSize < 500 || chunkSize > 10000)) {
-                errors.push({
-                    field: 'step1.chunkSize',
-                    message: 'Chunk size must be between 500 and 10,000'
-                });
+            // Validate step 3
+            if (stepSpecific.step3) {
+                var step3 = stepSpecific.step3;
+                if (step3.confidenceThreshold !== undefined) {
+                    if (typeof step3.confidenceThreshold !== 'number' ||
+                        step3.confidenceThreshold < 0 ||
+                        step3.confidenceThreshold > 1) {
+                        errors.push({
+                            field: 'stepSpecific.step3.confidenceThreshold',
+                            message: 'Confidence threshold must be a number between 0 and 1'
+                        });
+                    }
+                }
+                if (step3.similarityThreshold !== undefined) {
+                    if (typeof step3.similarityThreshold !== 'number' ||
+                        step3.similarityThreshold < 0 ||
+                        step3.similarityThreshold > 1) {
+                        errors.push({
+                            field: 'stepSpecific.step3.similarityThreshold',
+                            message: 'Similarity threshold must be a number between 0 and 1'
+                        });
+                    }
+                }
             }
-        }
-        // Step 3 validation
-        if (stepSettings.step3) {
-            const { minRiskScore, similarityThreshold } = stepSettings.step3;
-            if (minRiskScore && (minRiskScore < 1 || minRiskScore > 10)) {
-                errors.push({
-                    field: 'step3.minRiskScore',
-                    message: 'Min risk score must be between 1 and 10'
-                });
+            // Validate step 5
+            if ((_b = stepSpecific.step5) === null || _b === void 0 ? void 0 : _b.complexityThreshold) {
+                if (typeof stepSpecific.step5.complexityThreshold === 'string') {
+                    var validComplexities = ['low', 'medium', 'high'];
+                    if (!validComplexities.includes(stepSpecific.step5.complexityThreshold)) {
+                        errors.push({
+                            field: 'stepSpecific.step5.complexityThreshold',
+                            message: 'Complexity threshold must be one of: low, medium, high'
+                        });
+                    }
+                }
+                else if (typeof stepSpecific.step5.complexityThreshold === 'number') {
+                    if (stepSpecific.step5.complexityThreshold < 1 ||
+                        stepSpecific.step5.complexityThreshold > 10) {
+                        errors.push({
+                            field: 'stepSpecific.step5.complexityThreshold',
+                            message: 'Complexity threshold must be a number between 1 and 10'
+                        });
+                    }
+                }
             }
-            if (similarityThreshold && (similarityThreshold < 0 || similarityThreshold > 1)) {
-                errors.push({
-                    field: 'step3.similarityThreshold',
-                    message: 'Similarity threshold must be between 0 and 1'
-                });
-            }
-        }
-        // Step 5 validation
-        if (stepSettings.step5) {
-            const { maxAttackPaths, complexityThreshold } = stepSettings.step5;
-            if (maxAttackPaths && (maxAttackPaths < 1 || maxAttackPaths > 50)) {
-                errors.push({
-                    field: 'step5.maxAttackPaths',
-                    message: 'Max attack paths must be between 1 and 50'
-                });
-            }
-            if (complexityThreshold && (complexityThreshold < 0 || complexityThreshold > 1)) {
-                errors.push({
-                    field: 'step5.complexityThreshold',
-                    message: 'Complexity threshold must be between 0 and 1'
-                });
-            }
-        }
-        return errors;
-    }
-    /**
-     * Check if a string is a valid URL
-     */
-    static isValidUrl(url) {
-        try {
-            new URL(url);
-            return true;
-        }
-        catch {
-            return false;
-        }
-    }
-    /**
-     * Get validation summary
-     */
-    static getValidationSummary(errors) {
-        if (errors.length === 0) {
-            return 'Configuration is valid';
-        }
-        return `Found ${errors.length} validation error${errors.length > 1 ? 's' : ''}:\n` +
-            errors.map(e => `• ${e.field}: ${e.message}`).join('\n');
-    }
-}
+        };
+        return SettingsValidator;
+    }());
+    // Export to window
+    window.SettingsValidator = SettingsValidator;
+})(window);
+//# sourceMappingURL=validation.js.map
