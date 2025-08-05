@@ -2,36 +2,55 @@ import { Socket } from 'socket.io-client';
 
 // Pipeline Types
 export interface PipelineStep {
-  id: number;
+  id: number;  // Added id field
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
-  data: any;
+  status: 'idle' | 'running' | 'completed' | 'error' | 'pending';  // Added 'pending' status
   percentage: number;
+  data?: any;
+  icon?: React.ReactNode;
+  description?: string;
 }
 
 export interface PipelineState {
   steps: PipelineStep[];
+  currentStep?: number;
+  isRunning?: boolean;
 }
 
 // Review System Types
 export interface ReviewItem {
   id: string;
   type: 'threat' | 'dfd_component' | 'attack_path';
-  status: 'pending' | 'approve' | 'reject' | 'modify';
-  data: any;
+  content: any;
   timestamp: string;
-  step: number;
+  status: 'pending' | 'approved' | 'rejected';
 }
 
 // Model Configuration Types
 export interface ModelConfig {
-  llm_provider: 'scaleway' | 'ollama';
-  llm_model: string;
+  // LLM Provider settings
+  provider?: 'scaleway' | 'ollama';  // Made optional for backward compatibility
+  llm_provider?: 'scaleway' | 'ollama';  // Alternative property name
+  model?: string;
+  llm_model?: string;  // Alternative property name
+  
+  // API Configuration
   api_key?: string;
   base_url?: string;
-  max_tokens: number;
-  temperature: number;
-  timeout: number;
+  endpoint?: string;
+  
+  // Model Parameters
+  max_tokens?: number;
+  temperature?: number;
+  timeout?: number;
+  
+  // Processing Options
+  enable_rag?: boolean;
+  enable_web_search?: boolean;
+  parallel_execution?: boolean;
+  
+  // Additional settings that might be needed
+  [key: string]: any;  // Allow additional properties
 }
 
 // Notification Types
@@ -70,9 +89,13 @@ export interface ProgressData {
 
 // WebSocket Types
 export interface WebSocketMessage {
-  type: string;
-  data: any;
-  timestamp: string;
+  type: 'pipeline_update' | 'progress' | 'error' | 'complete';
+  step_index?: number;
+  status?: PipelineStep['status'];
+  percentage?: number;
+  data?: any;
+  message?: string;
+  error?: string;
 }
 
 export interface ConnectionStatus {
@@ -154,4 +177,23 @@ export interface AttackStep {
   mitre_attack_id?: string;
   prerequisites: string[];
   detection_methods: string[];
+}
+
+export interface ThreatData {
+  threat_id: string;
+  component: string;
+  threat_type: string;
+  description: string;
+  impact: string;
+  likelihood: string;
+  risk_score: number;
+  mitigation: string;
+  mitre_attack?: string[];
+}
+
+export interface FileUploadResponse {
+  filename: string;
+  filepath: string;
+  content_preview: string;
+  extracted_text?: string;
 }
