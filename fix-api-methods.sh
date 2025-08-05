@@ -1,3 +1,9 @@
+#!/bin/bash
+
+echo "Fixing API methods and error handling..."
+
+# Update ApiService with correct HTTP methods
+cat > src/services/ApiService.ts << 'EOF'
 import { ApiResponse, UploadResponse, ModelConfig } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
@@ -32,11 +38,9 @@ class ApiServiceClass {
         console.error('Non-JSON response:', text);
         
         if (response.status === 405) {
-          throw new Error('Method not allowed. Check the API endpoint and HTTP method.');
+          throw new Error('Method not allowed. The API endpoint does not support this HTTP method.');
         } else if (response.status === 404) {
           throw new Error('API endpoint not found. Please check if the backend is running correctly.');
-        } else if (response.status === 400) {
-          throw new Error('Bad request. The server rejected the request data.');
         } else {
           throw new Error(`Server error (${response.status}). Please check the backend logs.`);
         }
@@ -93,7 +97,7 @@ class ApiServiceClass {
     }
   }
 
-  // Pipeline operations - Use the correct endpoint structure
+  // Pipeline operations - Try GET first, fallback to POST
   async runPipelineStep(stepName: string): Promise<ApiResponse> {
     // Map step names to step numbers for the backend
     const stepMap: { [key: string]: number } = {
@@ -105,14 +109,22 @@ class ApiServiceClass {
 
     const stepNumber = stepMap[stepName] || 2;
 
-    // The Flask backend expects POST to /api/run-step with JSON body
-    return this.request<ApiResponse>('/api/run-step', {
-      method: 'POST',
-      body: JSON.stringify({
-        step: stepNumber,
-        input: {} // Add any required input data here
-      }),
-    });
+    // First try GET (some Flask apps use GET for triggering actions)
+    try {
+      return await this.request<ApiResponse>(`/api/run-step/${stepNumber}`, {
+        method: 'GET',
+      });
+    } catch (error: any) {
+      // If GET fails with 405, try POST
+      if (error.message.includes('Method not allowed')) {
+        console.log('GET failed, trying POST...');
+        return this.request<ApiResponse>(`/api/run-step/${stepNumber}`, {
+          method: 'POST',
+          body: JSON.stringify({}),
+        });
+      }
+      throw error;
+    }
   }
 
   // Configuration
@@ -151,9 +163,10 @@ class ApiServiceClass {
     comments?: string,
     modifications?: any
   ): Promise<ApiResponse> {
-    return this.request<ApiResponse>('/api/review-item/' + itemId, {
+    return this.request<ApiResponse>('/api/review', {
       method: 'POST',
       body: JSON.stringify({
+        item_id: itemId,
         decision,
         comments,
         modifications,
@@ -183,18 +196,89 @@ class ApiServiceClass {
       return null;
     }
   }
-
-  // Get progress for a specific session
-  async getProgress(sessionId: string = 'latest'): Promise<any> {
-    try {
-      return await this.request<any>(`/api/progress/${sessionId}`, {
-        method: 'GET'
-      });
-    } catch (error) {
-      console.error('Failed to get progress:', error);
-      return null;
-    }
-  }
 }
 
 export const ApiService = new ApiServiceClass();
+EOF
+
+# Also create a simple Python test script to check the backend
+cat > test_backend.py << 'EOF'
+#!/usr/bin/env python3
+"""Test script to check if the Flask backend is running correctly."""
+
+import requests
+import json
+import sys
+
+BASE_URL = "http://localhost:5000"
+
+def test_endpoint(method, endpoint, data=None):
+    """Test a single endpoint."""
+    url = f"{BASE_URL}{endpoint}"
+    print(f"\nTesting {method} {url}")
+    
+    try:
+        if method == "GET":
+            response = requests.get(url)
+        elif method == "POST":
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(url, json=data or {}, headers=headers)
+        
+        print(f"Status: {response.status_code}")
+        print(f"Headers: {dict(response.headers)}")
+        
+        # Try to parse as JSON
+        try:
+            data = response.json()
+            print(f"Response: {json.dumps(data, indent=2)}")
+        except:
+            print(f"Response (text): {response.text[:200]}...")
+            
+        return response.status_code
+        
+    except requests.exceptions.ConnectionError:
+        print("ERROR: Cannot connect to backend. Is it running?")
+        return None
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return None
+
+def main():
+    """Run all tests."""
+    print("Testing Flask Backend API Endpoints")
+    print("=" * 40)
+    
+    # Test health endpoint
+    test_endpoint("GET", "/api/health")
+    
+    # Test config endpoint
+    test_endpoint("GET", "/api/config")
+    
+    # Test pipeline status
+    test_endpoint("GET", "/api/pipeline-status")
+    
+    # Test run-step endpoints
+    for step in range(2, 6):
+        # Try both GET and POST
+        get_status = test_endpoint("GET", f"/api/run-step/{step}")
+        if get_status == 405:  # Method not allowed
+            test_endpoint("POST", f"/api/run-step/{step}")
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x test_backend.py
+
+echo "API methods fixed!"
+echo ""
+echo "Changes made:"
+echo "1. Added proper content-type checking to handle HTML error pages"
+echo "2. Try GET method first for run-step endpoints, fallback to POST"
+echo "3. Better error messages for different HTTP status codes"
+echo "4. Created test_backend.py script to check your Flask API"
+echo ""
+echo "To test your backend API:"
+echo "python3 test_backend.py"
+echo ""
+echo "This will show you which endpoints are available and what methods they accept."

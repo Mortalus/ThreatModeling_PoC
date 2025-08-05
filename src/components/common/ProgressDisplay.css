@@ -1,66 +1,41 @@
 .progress-display {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  background-color: var(--bg-surface, #1e293b);
-  border: 1px solid var(--border-color, #334155);
-  border-radius: 12px;
   padding: 1rem;
-  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-  min-width: 300px;
-  z-index: 1080;
-  animation: slideInUp 0.3s ease-out;
+  text-align: center;
 }
 
-.progress-header {
+.progress-info {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
 }
 
-.progress-title {
-  margin: 0;
-  font-size: 0.875rem;
+.progress-step {
+  color: var(--text-muted);
+}
+
+.progress-name {
+  color: var(--text-primary);
   font-weight: 500;
-  color: var(--text-primary, #f8fafc);
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: var(--accent-color);
+  transition: width 0.3s ease;
 }
 
 .progress-percentage {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--accent-color, #3b82f6);
-}
-
-.progress-bar-container {
-  width: 100%;
-  height: 8px;
-  background-color: var(--bg-tertiary, #334155);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 0.75rem;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  background-color: var(--accent-color, #3b82f6);
-  transition: width 0.3s ease;
-  border-radius: 4px;
-}
-
-.progress-message {
   font-size: 0.75rem;
-  color: var(--text-muted, #94a3b8);
-  margin-top: 0.5rem;
-}
-
-@keyframes slideInUp {
-  from {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
+  color: var(--text-secondary);
 }

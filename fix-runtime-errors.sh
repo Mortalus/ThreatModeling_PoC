@@ -1,3 +1,9 @@
+#!/bin/bash
+
+echo "Fixing runtime errors..."
+
+# 1. Fix notification duplicate keys by using a better ID generator
+cat > src/App.tsx << 'EOF'
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { CollapsibleSidebar } from './components/sidebar/CollapsibleSidebar';
@@ -349,3 +355,159 @@ function App() {
 }
 
 export default App;
+EOF
+
+# 2. Update ApiService to handle errors better
+cat > src/services/ApiService.ts << 'EOF'
+import { ApiResponse, UploadResponse, ModelConfig } from '../types';
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
+class ApiServiceClass {
+  private baseUrl: string;
+
+  constructor() {
+    this.baseUrl = API_BASE_URL;
+  }
+
+  private async request<T>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<T> {
+    const url = `${this.baseUrl}${endpoint}`;
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options.headers,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        // Extract error message from response
+        const errorMessage = data.error || data.message || `HTTP error! status: ${response.status}`;
+        throw new Error(errorMessage);
+      }
+
+      return data;
+    } catch (error: any) {
+      // If it's a network error or parsing error
+      if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+        throw new Error('Cannot connect to server. Please make sure the backend is running on port 5000.');
+      }
+      throw error;
+    }
+  }
+
+  // File upload
+  async uploadFile(file: File): Promise<UploadResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || data.message || 'Upload failed');
+      }
+
+      return data;
+    } catch (error: any) {
+      if (error.name === 'TypeError' && error.message === 'Failed to fetch') {
+        throw new Error('Cannot connect to server. Please make sure the backend is running.');
+      }
+      throw error;
+    }
+  }
+
+  // Pipeline operations
+  async runPipelineStep(stepName: string): Promise<ApiResponse> {
+    // Map step names to step numbers for the backend
+    const stepMap: { [key: string]: number } = {
+      'extract_dfd': 2,
+      'generate_threats': 3,
+      'refine_threats': 4,
+      'analyze_attack_paths': 5
+    };
+
+    const stepNumber = stepMap[stepName] || 2;
+
+    return this.request<ApiResponse>(`/api/run-step/${stepNumber}`, {
+      method: 'POST',
+      body: JSON.stringify({}), // Send empty body to avoid 400 errors
+    });
+  }
+
+  // Configuration
+  async getConfig(): Promise<ModelConfig> {
+    try {
+      const response = await this.request<{ success: boolean; config: ModelConfig }>('/api/config');
+      return response.config;
+    } catch (error) {
+      // Return default config if backend is not ready
+      console.log('Using default config');
+      return {
+        llm_provider: 'scaleway',
+        llm_model: 'mixtral-8x7b-instruct',
+        api_key: '',
+        base_url: '',
+        max_tokens: 2000,
+        temperature: 0.7,
+        timeout: 300
+      };
+    }
+  }
+
+  async updateConfig(config: ModelConfig): Promise<ApiResponse> {
+    return this.request<ApiResponse>('/api/config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+
+  // Review operations
+  async reviewItem(
+    itemId: string,
+    decision: 'approve' | 'reject' | 'modify',
+    comments?: string,
+    modifications?: any
+  ): Promise<ApiResponse> {
+    return this.request<ApiResponse>('/api/review', {
+      method: 'POST',
+      body: JSON.stringify({
+        item_id: itemId,
+        decision,
+        comments,
+        modifications,
+      }),
+    });
+  }
+
+  // Health check
+  async healthCheck(): Promise<{ status: string }> {
+    return this.request<{ status: string }>('/api/health');
+  }
+}
+
+export const ApiService = new ApiServiceClass();
+EOF
+
+echo "Runtime errors fixed!"
+echo ""
+echo "Changes made:"
+echo "1. Fixed duplicate notification IDs with better unique ID generator"
+echo "2. Improved WebSocket connection handling with fallback to polling"
+echo "3. Better error handling and user-friendly error messages"
+echo "4. Added auto-removal of notifications after 5 seconds"
+echo "5. Fixed API requests to include empty body for POST requests"
+echo ""
+echo "Make sure your Flask backend is running on port 5000!"

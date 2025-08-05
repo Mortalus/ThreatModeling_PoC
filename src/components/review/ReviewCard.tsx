@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ReviewItem } from '../../types';
+import { ReviewItem, ThreatData, DFDComponentData } from '../../types';
 import './ReviewCard.css';
 
 interface ReviewCardProps {
@@ -12,7 +12,7 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ item, onReview }) => {
   const [comments, setComments] = useState('');
   const [modifications, setModifications] = useState('');
 
-  const getTypeIcon = (type: string) => {
+  const getTypeIcon = (type: string): string => {
     switch (type) {
       case 'threat': return '⚠️';
       case 'dfd_component': return '🔗';
@@ -21,66 +21,77 @@ export const ReviewCard: React.FC<ReviewCardProps> = ({ item, onReview }) => {
     }
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string): string => {
     switch (status) {
       case 'pending': return 'var(--warning-color)';
-      case 'approve': return 'var(--success-color)';
-      case 'reject': return 'var(--error-color)';
+      case 'approved': return 'var(--success-color)';
+      case 'rejected': return 'var(--error-color)';
       case 'modify': return 'var(--info-color)';
       default: return 'var(--text-muted)';
     }
   };
 
-  const handleDecision = (decision: 'approve' | 'reject' | 'modify') => {
+  const handleDecision = (decision: 'approve' | 'reject' | 'modify'): void => {
     const finalComments = comments.trim() || undefined;
-    const finalModifications = modifications.trim() ? JSON.parse(modifications) : undefined;
+    const finalModifications = modifications.trim() ? 
+      JSON.parse(modifications) : undefined;
     
     onReview(item.id, decision, finalComments, finalModifications);
     setComments('');
     setModifications('');
   };
 
-  const renderItemData = () => {
-    if (item.type === 'threat' && item.data) {
+  const isThreatData = (data: any): data is ThreatData => {
+    return item.type === 'threat' && data && 'component_name' in data;
+  };
+
+  const isDFDComponentData = (data: any): data is DFDComponentData => {
+    return item.type === 'dfd_component' && data && 'name' in data;
+  };
+
+  const renderItemData = (): JSX.Element => {
+    if (isThreatData(item.data)) {
+      const data = item.data as ThreatData;
       return (
         <div className="threat-data">
           <div className="data-row">
-            <strong>Component:</strong> {item.data.component_name}
+            <strong>Component:</strong> {data.component_name}
           </div>
           <div className="data-row">
-            <strong>STRIDE:</strong> {item.data.stride_category}
+            <strong>STRIDE:</strong> {data.stride_category}
           </div>
           <div className="data-row">
             <strong>Risk:</strong> 
-            <span className={`risk-badge risk-${item.data.risk_score?.toLowerCase()}`}>
-              {item.data.risk_score}
+            <span className={`risk-badge risk-${data.risk_score?.toLowerCase()}`}>
+              {data.risk_score}
             </span>
           </div>
           <div className="data-row">
             <strong>Description:</strong>
-            <p>{item.data.threat_description}</p>
+            <p>{data.threat_description}</p>
           </div>
           <div className="data-row">
             <strong>Mitigation:</strong>
-            <p>{item.data.mitigation_suggestion}</p>
+            <p>{data.mitigation_suggestion}</p>
           </div>
         </div>
       );
     }
 
-    if (item.type === 'dfd_component' && item.data) {
+    if (isDFDComponentData(item.data)) {
+      const data = item.data as DFDComponentData;
       return (
         <div className="dfd-data">
           <div className="data-row">
-            <strong>Name:</strong> {item.data.name}
+            <strong>Name:</strong> {data.name}
           </div>
           <div className="data-row">
-            <strong>Type:</strong> {item.data.type}
+            <strong>Type:</strong> {data.type}
           </div>
-          {item.data.description && (
+          {data.description && (
             <div className="data-row">
               <strong>Description:</strong>
-              <p>{item.data.description}</p>
+              <p>{data.description}</p>
             </div>
           )}
         </div>

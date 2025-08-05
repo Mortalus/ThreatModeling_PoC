@@ -1,0 +1,79 @@
+/* Pipeline Steps Styles */
+.pipeline-visualization {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-lg);
+  background-color: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--spacing-xl);
+}
+
+.pipeline-step {
+  flex: 1;
+  text-align: center;
+  position: relative;
+}
+
+.pipeline-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: 100%;
+  height: 2px;
+  background-color: var(--border-color);
+  transform: translateY(-50%);
+  z-index: 0;
+}
+
+.pipeline-step.completed:not(:last-child)::after {
+  background-color: var(--success-color);
+}
+
+.step-circle {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background-color: var(--bg-secondary);
+  border: 3px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto var(--spacing-sm);
+  position: relative;
+  z-index: 1;
+  transition: all var(--transition-base);
+}
+
+.pipeline-step.active .step-circle {
+  border-color: var(--accent-color);
+  background-color: var(--accent-color);
+  color: white;
+}
+
+.pipeline-step.completed .step-circle {
+  border-color: var(--success-color);
+  background-color: var(--success-color);
+  color: white;
+}
+
+.pipeline-step.error .step-circle {
+  border-color: var(--error-color);
+  background-color: var(--error-color);
+  color: white;
+}
+
+.step-icon {
+  font-size: 1.5rem;
+}
+
+.step-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.pipeline-step.active .step-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}

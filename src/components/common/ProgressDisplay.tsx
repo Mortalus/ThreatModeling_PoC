@@ -3,37 +3,31 @@ import { PipelineStep } from '../../types';
 import './ProgressDisplay.css';
 
 interface ProgressDisplayProps {
-  step?: PipelineStep | null;
+  steps: PipelineStep[];
 }
 
-export const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ step }) => {
-  if (!step || step.status !== 'running') {
+export const ProgressDisplay: React.FC<ProgressDisplayProps> = ({ steps }) => {
+  const currentStep = steps.findIndex(s => s.status === 'running');
+  
+  if (currentStep === -1) {
     return null;
   }
 
+  const step = steps[currentStep];
+
   return (
     <div className="progress-display">
-      <div className="progress-header">
-        <h4 className="progress-title">
-          Processing: {step.name}
-        </h4>
-        <span className="progress-percentage">
-          {step.percentage}%
-        </span>
+      <div className="progress-info">
+        <span className="progress-step">Step {currentStep + 1} of {steps.length}</span>
+        <span className="progress-name">{step.name}</span>
       </div>
-      
-      <div className="progress-bar-container">
+      <div className="progress-bar">
         <div 
-          className="progress-bar-fill"
+          className="progress-fill"
           style={{ width: `${step.percentage}%` }}
         />
       </div>
-      
-      {step.data?.message && (
-        <div className="progress-message">
-          {step.data.message}
-        </div>
-      )}
+      <div className="progress-percentage">{step.percentage}%</div>
     </div>
   );
 };

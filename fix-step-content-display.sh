@@ -1,3 +1,9 @@
+#!/bin/bash
+
+echo "Fixing StepContentDisplay component..."
+
+# Update the StepContentDisplay interface to include onStartAnalysis
+cat > src/components/pipeline/StepContentDisplay.tsx << 'EOF'
 import React, { useState } from 'react';
 import { FileUpload } from './FileUpload';
 import { PipelineStep, ModelConfig } from '../../types';
@@ -191,3 +197,193 @@ export const StepContentDisplay: React.FC<StepContentDisplayProps> = ({
     </div>
   );
 };
+EOF
+
+# Create/update the CSS for StepContentDisplay
+cat > src/components/pipeline/StepContentDisplay.css << 'EOF'
+.step-content-display {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.step-header {
+  text-align: center;
+  margin-bottom: 2rem;
+  padding: 0 2rem;
+}
+
+.step-title {
+  font-size: 2rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-primary);
+}
+
+.step-description {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.step-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.step-upload {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.upload-success {
+  text-align: center;
+  padding: 3rem;
+  background-color: var(--bg-surface);
+  border-radius: 1rem;
+  border: 1px solid var(--border-color);
+}
+
+.success-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.upload-success h3 {
+  font-size: 1.5rem;
+  margin: 0 0 2rem 0;
+  color: var(--text-primary);
+}
+
+.file-info {
+  background-color: var(--bg-secondary);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+  text-align: left;
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.info-item:last-child {
+  margin-bottom: 0;
+}
+
+.info-label {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.info-value {
+  color: var(--text-primary);
+}
+
+.ready-message {
+  color: var(--text-secondary);
+  margin-bottom: 2rem;
+}
+
+.start-analysis-btn {
+  font-size: 1.125rem;
+  padding: 1rem 2rem;
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.start-analysis-btn:hover:not(:disabled) {
+  background-color: #2563eb;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+.start-analysis-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+}
+
+.empty-state p {
+  margin-bottom: 1.5rem;
+}
+
+.view-mode-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  justify-content: center;
+}
+
+.view-btn {
+  padding: 0.5rem 1rem;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.view-btn:hover {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.view-btn.active {
+  background-color: var(--accent-color);
+  color: white;
+  border-color: var(--accent-color);
+}
+
+.json-view {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  overflow-x: auto;
+  font-family: monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.formatted-view {
+  padding: 1.5rem;
+}
+
+.step-results {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+}
+EOF
+
+echo "StepContentDisplay component fixed!"
+echo ""
+echo "The app should now:"
+echo "1. Show the upload screen properly"
+echo "2. Display file info after upload"
+echo "3. Show the 'Start Threat Analysis' button"
+echo "4. Handle settings modal correctly"

@@ -1,46 +1,64 @@
-.file-upload-container {
-  width: 100%;
-  margin: var(--spacing-md) 0;
-}
-
-.file-upload-area {
+.file-upload {
   border: 2px dashed var(--border-color);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-xl);
+  border-radius: 1rem;
+  padding: 3rem 2rem;
   text-align: center;
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: all 0.3s ease;
   background-color: var(--bg-surface);
 }
 
-.file-upload-area:hover:not(.disabled) {
+.file-upload:hover:not(.disabled) {
   border-color: var(--accent-color);
-  background-color: var(--bg-tertiary);
+  background-color: rgba(59, 130, 246, 0.05);
 }
 
-.file-upload-area.drag-active {
+.file-upload.dragging {
   border-color: var(--accent-color);
-  background-color: var(--bg-tertiary);
+  background-color: rgba(59, 130, 246, 0.1);
   transform: scale(1.02);
 }
 
-.file-upload-area.disabled {
+.file-upload.disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.file-upload-icon {
-  font-size: 3rem;
-  margin-bottom: var(--spacing-md);
+.upload-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+  opacity: 0.5;
 }
 
-.file-upload-text {
-  font-size: 1.125rem;
-  margin-bottom: var(--spacing-sm);
+.upload-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
   color: var(--text-primary);
 }
 
-.file-upload-hint {
+.upload-subtitle {
+  color: var(--text-secondary);
+  margin: 0 0 1rem 0;
+}
+
+.upload-link {
+  color: var(--accent-color);
+  text-decoration: underline;
+}
+
+.upload-hint {
   font-size: 0.875rem;
   color: var(--text-muted);
+  margin: 0;
+}
+
+.upload-error {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--error-color);
+  border-radius: 0.5rem;
+  color: var(--error-color);
+  font-size: 0.875rem;
 }

@@ -16,16 +16,11 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
   const [sortBy, setSortBy] = useState<'timestamp' | 'type' | 'step'>('timestamp');
 
   const filteredItems = useMemo(() => {
-    let items = reviewQueue;
+    let items = [...reviewQueue];
     
     // Apply filter
     if (filter !== 'all') {
-      items = items.filter(item => {
-        if (filter === 'pending') return item.status === 'pending';
-        if (filter === 'approved') return item.status === 'approve';
-        if (filter === 'rejected') return item.status === 'reject';
-        return true;
-      });
+      items = items.filter(item => item.status === filter);
     }
     
     // Apply sorting
@@ -46,8 +41,8 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
   }, [reviewQueue, filter, sortBy]);
 
   const pendingCount = reviewQueue.filter(item => item.status === 'pending').length;
-  const approvedCount = reviewQueue.filter(item => item.status === 'approve').length;
-  const rejectedCount = reviewQueue.filter(item => item.status === 'reject').length;
+  const approvedCount = reviewQueue.filter(item => item.status === 'approved').length;
+  const rejectedCount = reviewQueue.filter(item => item.status === 'rejected').length;
 
   return (
     <div className="review-panel">
@@ -68,7 +63,7 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
           <select
             id="filter-select"
             value={filter}
-            onChange={(e) => setFilter(e.target.value as any)}
+            onChange={(e) => setFilter(e.target.value as typeof filter)}
             className="filter-select"
           >
             <option value="all">All Items</option>
@@ -83,7 +78,7 @@ export const ReviewPanel: React.FC<ReviewPanelProps> = ({
           <select
             id="sort-select"
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as any)}
+            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
             className="sort-select"
           >
             <option value="timestamp">Date</option>
