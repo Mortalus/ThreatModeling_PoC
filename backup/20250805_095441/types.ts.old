@@ -1,0 +1,108 @@
+// js/types.ts
+
+interface LLMProvider {
+  id: string;
+  name: string;
+  requiresApiKey: boolean;
+  models: string[];
+  defaultModel: string;
+  endpoint?: string;
+  configurable?: boolean;
+}
+
+interface LLMConfiguration {
+  provider: string;
+  model: string;
+  apiKey?: string;
+  endpoint?: string;
+  temperature: number;
+  maxTokens: number;
+}
+
+interface ProcessingConfiguration {
+  timeout: number;
+  enableAsyncProcessing: boolean;
+  maxConcurrentCalls: number;
+  detailedLlmLogging: boolean;
+}
+
+interface DebugConfiguration {
+  debugMode: boolean;
+  forceRuleBased: boolean;
+  verboseErrorReporting: boolean;
+}
+
+interface FeatureFlags {
+  enableQualityCheck: boolean;
+  enableMultiPass: boolean;
+  enableMermaid: boolean;
+  enableLlmEnrichment: boolean;
+  mitreEnabled: boolean;
+  mitreVersion: string;
+}
+
+interface StepSpecificSettings {
+  step1?: {
+    minTextLength: number;
+    maxTextLength: number;
+    chunkSize: number;
+    enableSpellCheck?: boolean;
+    enableGrammarCheck?: boolean;
+  };
+  step2?: {
+    maxComponents: number;
+    enableDiagramValidation?: boolean;
+  };
+  step3?: {
+    minRiskScore: number;
+    maxComponentsToAnalyze: number;
+    similarityThreshold: number;
+    confidenceThreshold?: number;
+  };
+  step4?: {
+    confidenceThreshold: number;
+    enableCveEnrichment?: boolean;
+    cvssThreshold?: number;
+  };
+  step5?: {
+    maxAttackPaths: number;
+    complexityThreshold: number;
+  };
+}
+
+interface ThreatModelingConfiguration {
+  llm: LLMConfiguration;
+  processing: ProcessingConfiguration;
+  debug: DebugConfiguration;
+  features: FeatureFlags;
+  directories: {
+    input: string;
+    output: string;
+  };
+  stepSpecific?: StepSpecificSettings;
+}
+
+interface SettingsModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (config: ThreatModelingConfiguration) => Promise<void>;
+  currentConfig: ThreatModelingConfiguration;
+}
+
+interface ValidationError {
+  field: string;
+  message: string;
+}
+
+type SettingsSection = 'llm' | 'processing' | 'debug' | 'features' | 'directories';
+
+// Since we're not using ES modules, we'll declare these types globally
+declare global {
+  interface Window {
+    ThreatModelingConfiguration: ThreatModelingConfiguration;
+    LLMProvider: LLMProvider;
+    ValidationError: ValidationError;
+  }
+}
+
+// No exports since we're not using modules

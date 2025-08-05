@@ -72,7 +72,7 @@ def create_app():
         )
         return response
 
-    CORS(app)
+    CORS(app, origins=['http://localhost:3001'])
     socketio = SocketIO(app, cors_allowed_origins="*")
     setup_logging()
     pipeline_state = PipelineState()

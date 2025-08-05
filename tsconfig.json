@@ -1,27 +1,26 @@
 {
   "compilerOptions": {
-    "target": "ES5",
-    "module": "none",  // This is the key change - no module system
-    "lib": ["ES2017", "DOM"],  // Updated to ES2017 for Object.values
-    "moduleResolution": "node",
-    "strict": true,
+    "target": "es5",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "es6"
+    ],
     "allowJs": true,
-    "noEmit": false,  // Allow TypeScript to emit files
-    "outDir": "./js",  // Output to the same directory
-    "rootDir": "./js",
-    "esModuleInterop": true,
     "skipLibCheck": true,
-    "jsx": "react",
-    "removeComments": false,
-    "sourceMap": true
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx"
   },
   "include": [
-    "js/globals.d.ts",
-    "js/**/*.ts",
-    "js/**/*.tsx"
-  ],
-  "exclude": [
-    "js/**/*.js",
-    "node_modules"
+    "src"
   ]
 }

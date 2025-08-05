@@ -1,0 +1,236 @@
+/* Shared styles for all data viewers */
+.threat-data-viewer,
+.dfd-data-viewer,
+.attack-path-viewer,
+.generic-data-viewer {
+  background-color: var(--bg-surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  overflow: hidden;
+}
+
+.data-viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.data-viewer-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.125rem;
+}
+
+.view-mode-controls {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.data-viewer-content {
+  padding: var(--spacing-md);
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.json-display {
+  background-color: var(--bg-primary);
+  color: var(--text-secondary);
+  padding: var(--spacing-md);
+  border-radius: var(--radius-md);
+  font-family: var(--font-family-mono);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+/* Threat-specific styles */
+.threats-summary {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.threat-card {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.threat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+}
+
+.threat-component {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.risk-badge {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: white;
+}
+
+.risk-low { background-color: var(--success-color); }
+.risk-medium { background-color: var(--warning-color); }
+.risk-high { background-color: var(--error-color); }
+.risk-critical { background-color: #dc2626; }
+
+.threat-category {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin-bottom: var(--spacing-sm);
+}
+
+.threat-description,
+.threat-mitigation,
+.threat-mitre {
+  margin-bottom: var(--spacing-sm);
+  line-height: 1.5;
+}
+
+/* DFD-specific styles */
+.dfd-project-info {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.component-section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.component-section h5 {
+  margin: 0 0 var(--spacing-md) 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.component-list {
+  display: grid;
+  gap: var(--spacing-sm);
+}
+
+.component-item {
+  padding: var(--spacing-sm);
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.component-item strong {
+  color: var(--text-primary);
+}
+
+.component-item p {
+  margin: var(--spacing-xs) 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+/* Attack Path-specific styles */
+.attack-paths-summary {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.attack-path-card {
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.path-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: var(--spacing-sm);
+}
+
+.path-header h5 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.path-metrics {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.impact-badge,
+.likelihood-badge {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: white;
+}
+
+.impact-low,
+.likelihood-low { background-color: var(--success-color); }
+.impact-medium,
+.likelihood-medium { background-color: var(--warning-color); }
+.impact-high,
+.likelihood-high { background-color: var(--error-color); }
+
+.path-description {
+  margin-bottom: var(--spacing-md);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.path-steps,
+.path-mitigations {
+  margin-bottom: var(--spacing-md);
+}
+
+.path-steps h6,
+.path-mitigations h6 {
+  margin: 0 0 var(--spacing-sm) 0;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.attack-step {
+  margin-bottom: var(--spacing-sm);
+}
+
+.attack-step strong {
+  color: var(--text-primary);
+}
+
+.attack-step p {
+  margin: var(--spacing-xs) 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.mitre-tag {
+  display: inline-block;
+  background-color: var(--accent-color);
+  color: white;
+  padding: 2px var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  margin-top: var(--spacing-xs);
+}
