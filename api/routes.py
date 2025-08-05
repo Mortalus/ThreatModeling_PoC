@@ -453,3 +453,225 @@ def register_routes(app, pipeline_state: PipelineState, runtime_config, upload_f
                 'error': 'Failed to fetch Ollama models',
                 'details': str(e)
             }), 500
+        
+    @app.route('/api/config/model', methods=['GET'])
+    def get_model_config():
+        """Get model configuration - specific endpoint for React app."""
+        try:
+            # Return model-specific configuration
+            model_config = {
+                'llm_provider': runtime_config.get('llm_provider', 'scaleway'),
+                'llm_model': runtime_config.get('llm_model', 'llama-3.3-70b-instruct'),
+                'api_key': '***' if runtime_config.get('scw_secret_key') else None,
+                'base_url': runtime_config.get('local_llm_endpoint', 'http://localhost:11434'),
+                'max_tokens': runtime_config.get('max_tokens', 8192),
+                'temperature': runtime_config.get('temperature', 0.3),
+                'timeout': runtime_config.get('timeout', 300)
+            }
+            return jsonify(model_config)
+        except Exception as e:
+            logger.error(f"Error getting model config: {e}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/config/model', methods=['PUT'])
+    def update_model_config():
+        """Update model configuration - specific endpoint for React app."""
+        try:
+            new_config = request.get_json()
+            if not new_config:
+                return jsonify({'error': 'No configuration provided'}), 400
+            
+            updates = {}
+            
+            # Update model-specific settings
+            if 'llm_provider' in new_config:
+                updates['llm_provider'] = new_config['llm_provider']
+                runtime_config['llm_provider'] = new_config['llm_provider']
+            
+            if 'llm_model' in new_config:
+                updates['llm_model'] = new_config['llm_model']
+                runtime_config['llm_model'] = new_config['llm_model']
+            
+            if 'base_url' in new_config:
+                updates['local_llm_endpoint'] = new_config['base_url']
+                runtime_config['local_llm_endpoint'] = new_config['base_url']
+            
+            if 'max_tokens' in new_config:
+                updates['max_tokens'] = int(new_config['max_tokens'])
+                runtime_config['max_tokens'] = int(new_config['max_tokens'])
+            
+            if 'temperature' in new_config:
+                updates['temperature'] = float(new_config['temperature'])
+                runtime_config['temperature'] = float(new_config['temperature'])
+            
+            if 'timeout' in new_config:
+                updates['timeout'] = int(new_config['timeout'])
+                runtime_config['timeout'] = int(new_config['timeout'])
+            
+            # Save configuration (excluding API keys)
+            config_file = os.path.join(output_folder, 'runtime_config.json')
+            config_to_save = {k: v for k, v in runtime_config.items() 
+                            if not k.endswith('_key') and not k.endswith('_secret')}
+            with open(config_file, 'w') as f:
+                json.dump(config_to_save, f, indent=2)
+            
+            logger.info(f"Model configuration updated: {updates}")
+            pipeline_state.add_log(f"Model configuration updated: {', '.join(updates.keys())}", 'info')
+            
+            return jsonify({
+                'message': 'Model configuration updated successfully',
+                'config': {
+                    'llm_provider': runtime_config['llm_provider'],
+                    'llm_model': runtime_config['llm_model']
+                }
+            })
+        except Exception as e:
+            logger.error(f"Error updating model config: {e}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/review/queue', methods=['GET'])
+    def get_all_review_queue():
+        """Get review queue for all steps - React app expects this endpoint."""
+        try:
+            all_items = []
+            with pipeline_state.lock:
+                review_queue = pipeline_state.state.get('review_queue', {})
+                
+                # Collect all review items from all steps
+                for step, items in review_queue.items():
+                    for item in items:
+                        # Add step information to each item
+                        item_with_step = {
+                            **item,
+                            'step': step,
+                            'timestamp': item.get('timestamp', ''),
+                            'data': item.get('data', {})
+                        }
+                        all_items.append(item_with_step)
+                
+                # Sort by timestamp (newest first)
+                all_items.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+                
+                # Filter only pending items
+                pending_items = [item for item in all_items if item.get('status') == 'pending']
+                
+            return jsonify(pending_items)
+        except Exception as e:
+            logger.error(f"Error getting review queue: {e}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/config/settings', methods=['GET'])
+    def get_all_settings():
+        """Get all settings in structured format - for React settings modal."""
+        try:
+            settings = {
+                'llm': {
+                    'provider': runtime_config.get('llm_provider', 'scaleway'),
+                    'model': runtime_config.get('llm_model', 'llama-3.3-70b-instruct'),
+                    'temperature': runtime_config.get('temperature', 0.3),
+                    'max_tokens': runtime_config.get('max_tokens', 8192),
+                    'timeout': runtime_config.get('timeout', 300),
+                    'base_url': runtime_config.get('local_llm_endpoint', 'http://localhost:11434')
+                },
+                'processing': {
+                    'enable_async': runtime_config.get('enable_async_processing', True),
+                    'max_concurrent': runtime_config.get('max_concurrent_calls', 5),
+                    'batch_size': runtime_config.get('batch_size', 5)
+                },
+                'features': {
+                    'enable_quality_check': runtime_config.get('enable_quality_check', True),
+                    'enable_multi_pass': runtime_config.get('enable_multi_pass', True),
+                    'enable_mermaid': runtime_config.get('enable_mermaid', True),
+                    'enable_llm_enrichment': runtime_config.get('enable_llm_enrichment', True),
+                    'mitre_enabled': runtime_config.get('mitre_enabled', True)
+                },
+                'debug': {
+                    'debug_mode': runtime_config.get('debug_mode', False),
+                    'detailed_llm_logging': runtime_config.get('detailed_llm_logging', False),
+                    'force_rule_based': runtime_config.get('force_rule_based', False)
+                }
+            }
+            return jsonify(settings)
+        except Exception as e:
+            logger.error(f"Error getting settings: {e}")
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/config/settings', methods=['PUT'])
+    def update_all_settings():
+        """Update all settings from React settings modal."""
+        try:
+            new_settings = request.get_json()
+            if not new_settings:
+                return jsonify({'error': 'No settings provided'}), 400
+            
+            updates = {}
+            
+            # Update LLM settings
+            if 'llm' in new_settings:
+                llm = new_settings['llm']
+                if 'provider' in llm:
+                    runtime_config['llm_provider'] = llm['provider']
+                    updates['llm_provider'] = llm['provider']
+                if 'model' in llm:
+                    runtime_config['llm_model'] = llm['model']
+                    updates['llm_model'] = llm['model']
+                if 'temperature' in llm:
+                    runtime_config['temperature'] = float(llm['temperature'])
+                    updates['temperature'] = float(llm['temperature'])
+                if 'max_tokens' in llm:
+                    runtime_config['max_tokens'] = int(llm['max_tokens'])
+                    updates['max_tokens'] = int(llm['max_tokens'])
+                if 'timeout' in llm:
+                    runtime_config['timeout'] = int(llm['timeout'])
+                    updates['timeout'] = int(llm['timeout'])
+                if 'base_url' in llm:
+                    runtime_config['local_llm_endpoint'] = llm['base_url']
+                    updates['local_llm_endpoint'] = llm['base_url']
+            
+            # Update processing settings
+            if 'processing' in new_settings:
+                proc = new_settings['processing']
+                if 'enable_async' in proc:
+                    runtime_config['enable_async_processing'] = bool(proc['enable_async'])
+                    updates['enable_async_processing'] = bool(proc['enable_async'])
+                if 'max_concurrent' in proc:
+                    runtime_config['max_concurrent_calls'] = int(proc['max_concurrent'])
+                    updates['max_concurrent_calls'] = int(proc['max_concurrent'])
+                if 'batch_size' in proc:
+                    runtime_config['batch_size'] = int(proc['batch_size'])
+                    updates['batch_size'] = int(proc['batch_size'])
+            
+            # Update feature flags
+            if 'features' in new_settings:
+                features = new_settings['features']
+                for key in ['enable_quality_check', 'enable_multi_pass', 'enable_mermaid', 
+                           'enable_llm_enrichment', 'mitre_enabled']:
+                    if key in features:
+                        runtime_config[key] = bool(features[key])
+                        updates[key] = bool(features[key])
+            
+            # Update debug settings
+            if 'debug' in new_settings:
+                debug = new_settings['debug']
+                for key in ['debug_mode', 'detailed_llm_logging', 'force_rule_based']:
+                    if key in debug:
+                        runtime_config[key] = bool(debug[key])
+                        updates[key] = bool(debug[key])
+            
+            # Save configuration (excluding API keys)
+            config_file = os.path.join(output_folder, 'runtime_config.json')
+            config_to_save = {k: v for k, v in runtime_config.items() 
+                            if not k.endswith('_key') and not k.endswith('_secret')}
+            with open(config_file, 'w') as f:
+                json.dump(config_to_save, f, indent=2)
+            
+            logger.info(f"Settings updated: {updates}")
+            pipeline_state.add_log(f"Settings updated: {', '.join(updates.keys())}", 'info')
+            
+            return jsonify({
+                'message': 'Settings updated successfully',
+                'updates': list(updates.keys())
+            })
+        except Exception as e:
+            logger.error(f"Error updating settings: {e}")
+            return jsonify({'error': str(e)}), 500

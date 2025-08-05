@@ -72,8 +72,21 @@ def create_app():
         )
         return response
 
-    CORS(app, origins=['http://localhost:3001'])
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    # Enhanced CORS configuration for React development
+    CORS(app, 
+         origins=['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'],
+         supports_credentials=True,
+         allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+         expose_headers=['Content-Type', 'Authorization'])
+    
+    # Configure SocketIO with proper CORS
+    socketio = SocketIO(app, 
+                       cors_allowed_origins=['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000', 'http://127.0.0.1:3001'],
+                       async_mode='threading',
+                       ping_timeout=60,
+                       ping_interval=25)
+    
     setup_logging()
     pipeline_state = PipelineState()
     log_startup_info(runtime_config)
@@ -96,37 +109,46 @@ def create_app():
     except Exception as e:
         logger.error(f"✗ File system permission error: {e}")
     
+    # Register all routes
     register_routes(app, pipeline_state, runtime_config, UPLOAD_FOLDER, OUTPUT_FOLDER, INPUT_FOLDER, socketio)
     register_review_routes(app, pipeline_state, socketio, OUTPUT_FOLDER)
     register_pipeline_routes(app, pipeline_state, runtime_config, socketio, OUTPUT_FOLDER, INPUT_FOLDER)
     register_websocket_handlers(socketio, pipeline_state)
     app.register_blueprint(config_bp)
     
+    # Add explicit OPTIONS handler ONLY for API routes (preflight requests)
+    @app.route('/api/<path:path>', methods=['OPTIONS'])
+    def handle_api_options(path):
+        response = jsonify({'status': 'ok'})
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS, PATCH'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
+        response.headers['Access-Control-Max-Age'] = '3600'
+        return response, 200
+    
     logger.info("Starting Enhanced Threat Modeling Pipeline Backend...")
     logger.info("Review system: ENABLED")
     logger.info(f"Upload folder: {UPLOAD_FOLDER}")
     logger.info(f"Output folder: {OUTPUT_FOLDER}")
     logger.info(f"Input folder: {INPUT_FOLDER}")
+    logger.info("CORS configured for React development on ports 3000 and 3001")
     logger.info("Backend ready with review system!")
     
-    return app, socketio
+    return app, socketio, pipeline_state, runtime_config, OUTPUT_FOLDER, INPUT_FOLDER
 
 if __name__ == '__main__':
-    app, socketio = create_app()
-    port = int(os.getenv('PORT', 5000))
+    app, socketio, pipeline_state, runtime_config, OUTPUT_FOLDER, INPUT_FOLDER = create_app()
     
-    # Configure host based on environment
-    host = os.getenv('HOST', '127.0.0.1')
+    # Get port from environment or use default
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('FLASK_ENV') == 'development'
     
-    print(f"\n{'='*60}")
-    print(f"🚀 Threat Modeling Pipeline with Review System")
-    print(f"{'='*60}")
-    print(f"🌐 Server: http://{host}:{port}")
-    print(f"📂 Upload folder: ./uploads")
-    print(f"💾 Output folder: {os.getenv('OUTPUT_DIR', './output')}")
-    print(f"📄 Input folder: {os.getenv('INPUT_DIR', './input_documents')}")
-    print(f"🔌 WebSocket: enabled")
-    print(f"🔍 Review System: enabled")
-    print(f"{'='*60}\n")
+    logger.info(f"Starting server on port {port} (debug={debug_mode})")
     
-    socketio.run(app, host=host, port=port, debug=True)
+    # Use socketio.run for WebSocket support
+    socketio.run(app, 
+                 host='0.0.0.0', 
+                 port=port, 
+                 debug=debug_mode,
+                 use_reloader=debug_mode,
+                 log_output=True)
